@@ -73,4 +73,7 @@ profile directory; the tests use both.
 ## Repository
 
 - Remote: `origin`, https://github.com/eschnett/SimLaunch.jl, branch `main`.
+- CI: `.github/workflows/CI.yml` runs the tests on Linux and macOS, with
+  Julia 1.12 and the newest. macOS has bash 3.2: generated scripts and the
+  tests must run under it.
 - Commit or push only when Erik asks. No `Co-Authored-By` lines.

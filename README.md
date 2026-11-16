@@ -6,6 +6,8 @@ packages it takes by path, instantiates and precompiles on the site, generates
 the batch script from a short job spec and a site profile, and submits it with
 [SimWatch](https://github.com/eschnett/simwatch) status files.
 
+[![CI](https://github.com/eschnett/SimLaunch.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/SimLaunch.jl/actions/workflows/CI.yml)
+
 - [Status](#status)
 - [Installation](#installation)
 - [Example](#example)
