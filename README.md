@@ -13,33 +13,14 @@ the batch script from a short job spec and a site profile, and submits it with
 - [After a job](#after-a-job)
 - [Restarts](#restarts)
 - [Design](#design)
+  - [What has run where](#what-has-run-where)
 
 ## Status
 
-Milestones 1 to 3 of four are implemented. Milestone 2 has run on
-clusters, in part; milestone 3 (queue rules, `status`, `fetch`, `usage`,
-`clean`, restart chains, `check-restart`, variants, MPI and placement) has
-run on the laptop only.
-
-- Run on clusters:
-  - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
-    side, and a pinned thread scan of TreeWaveOLDG, 1 to 192 threads.
-  - `fir` (CPU): S1's sweep from the same spec, with the same results.
-  - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
-    `cuda` environment.
-  - `symmetry`: the same row on one H200, after a precompile job on an H200
-    node.
-  - `local`: the one run of S1's sweep that fits into the laptop's memory.
-- Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
-  `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
-  precompile lock that is held or stale, a chain of jobs, a pre-empted job
-  that submits its successor, and `check-restart`.
-- Run on the laptop by hand: two versions of a package in one job, with MPI
-  ranks under MPICH_jll's `mpiexec`.
-- Read only, never run: scripts with `srun` launchers, `numactl` placement,
-  several nodes, or a site's own MPI.
-- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
-  refused for; the memory part of the resource check; `--snapshot-pins`.
+In development. Jobs on one node or one GPU have run on four clusters.
+Restart chains, MPI and the commands that follow a job (`status`, `fetch`,
+`clean`) are implemented but have run on the laptop only.
+[What has run where](#what-has-run-where) has the details.
 
 ## Installation
 
@@ -203,3 +184,27 @@ that still appends to its old output runs with `mutable_restarts = true`
 ## Design
 
 [`PLAN.md`](PLAN.md) has the design, its reasons and the plan.
+
+### What has run where
+
+Milestones 1 to 3 of the plan's four are implemented.
+
+- Run on clusters:
+  - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
+    side, and a pinned thread scan of TreeWaveOLDG, 1 to 192 threads.
+  - `fir` (CPU): S1's sweep from the same spec, with the same results.
+  - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
+    `cuda` environment.
+  - `symmetry`: the same row on one H200, after a precompile job on an H200
+    node.
+  - `local`: the one run of S1's sweep that fits into the laptop's memory.
+- Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
+  `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
+  precompile lock that is held or stale, a chain of jobs, a pre-empted job
+  that submits its successor, and `check-restart`.
+- Run on the laptop by hand: two versions of a package in one job, with MPI
+  ranks under MPICH_jll's `mpiexec`.
+- Read only, never run: scripts with `srun` launchers, `numactl` placement,
+  several nodes, or a site's own MPI.
+- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
+  refused for; the memory part of the resource check; `--snapshot-pins`.
