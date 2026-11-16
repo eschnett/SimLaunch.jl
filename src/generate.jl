@@ -2,6 +2,13 @@
 
 study_code(site::Site, study) = joinpath(site.code, study)
 study_scratch(site::Site, study) = joinpath(site.scratch, study)
+
+"""
+The study's own Julia depot on a site. Its `compiled` directory holds the
+study's precompiled caches, so preparing another study cannot make them
+stale; packages, artifacts and registries are links into the site's depot.
+"""
+study_depot(site::Site, study) = joinpath(study_code(site, study), "depot")
 log_file(job::Job, jobid) = joinpath(study_scratch(job.site, job.study), "logs", "$(job.name)-$jobid.out")
 
 "`gpus` times a memory size such as \"64G\"."
@@ -86,6 +93,7 @@ function generate(job::Job)
           PROJECT=$(shpath(joinpath(code, "src", job.project)))
           ENVDIR=$(shpath(joinpath(code, job.envdir)))      # the runs' environment
           TOOLS=$(shpath(joinpath(code, "tools")))
+          DEPOT=$(shpath(study_depot(site, job.study)))      # the study's compiled caches
           SCRATCH=$(shpath(scratch))
           JULIA=$(shpath(site.julia_bin))
           USE_SLURM=$(site.slurm ? 1 : 0)
@@ -125,6 +133,7 @@ function generate(job::Job)
         println(io, "module load $(q(m))")
     end
     println(io, "unset JULIA_LOAD_PATH JULIA_PROJECT")
+    println(io, "export JULIA_DEPOT_PATH=\"\$DEPOT:\"         # the study's depot, then Julia's own; not ~/.julia")
     println(io, "export OPENBLAS_NUM_THREADS=$(job.blas_threads)")
     println(io, "export JULIA_PKG_PRECOMPILE_AUTO=0")
     for (k, v) in sort!(collect(site.env))

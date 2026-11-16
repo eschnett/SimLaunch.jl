@@ -8,15 +8,16 @@
 ## Read first
 
 SimLaunch is a command-line tool that snapshots a Julia project, prepares it
-on a site and submits jobs there. Read `PROPOSAL.md` before changing anything:
+on a site and submits jobs there. Read `PLAN.md` before changing anything:
 it is the design, its reasons and the plan.
 
 Which file new content goes in:
 
 - `README.md`: for users. What it does, installation, an example, the status.
 - `CLAUDE.md`: this file. Commands, rules, repository facts. Keep it short.
-- `PROPOSAL.md`: the design and the plan, until it is split into `CODE.md`
-  (the current design), `PLAN.md` (the milestones) and `HISTORY.md`.
+- `PLAN.md`: the design, its reasons and the milestones, with what has run
+  where. `CODE.md` (the current design) and `HISTORY.md` are split off from
+  it later.
 - `TODO.md`, if present, is Erik's own list: do not modify it.
 
 Keep the tables of contents current.
@@ -46,10 +47,13 @@ profile directory; the tests use both.
 - Generated scripts are plain bash that must run without SimLaunch. The
   shared part is `templates/job_helpers.sh`.
 - Manifests are never copied to a site, and nothing that depends on cores,
-  threads, memory or time is shared between sites (PROPOSAL.md, "Source
+  threads, memory or time is shared between sites (PLAN.md, "Source
   snapshots" and "Job specs and generated scripts").
 - A spec field of a later milestone is refused by name (`LATER_KEYS` in
   `src/spec.jl`), never ignored.
+- A study's compiled caches are its own: jobs and `prepare` run with
+  `JULIA_DEPOT_PATH="<study>/depot:"`, never with `~/.julia` (PLAN.md,
+  "Prepare").
 - Cluster facts live in `sites/*.toml`. On a cluster, follow that cluster's
   skill: check the connection first, and never open one that needs MFA.
 - Submitting a job, or anything else on a cluster, is visible to others: ask

@@ -21,6 +21,7 @@ SITE=symmetry
 PROJECT=/home/eschnetter/claude/studies/toy/src/Toy
 ENVDIR=/home/eschnetter/claude/studies/toy/envs/default-cuda      # the runs' environment
 TOOLS=/home/eschnetter/claude/studies/toy/tools
+DEPOT=/home/eschnetter/claude/studies/toy/depot      # the study's compiled caches
 SCRATCH=/mnt/beegfs/eschnetter/claude/studies/toy
 JULIA="$HOME"/.juliaup/bin/julia
 USE_SLURM=1
@@ -203,6 +204,7 @@ if [ "$USE_SLURM" = 0 ]; then echo $$ > "$SCRATCH/logs/$SPEC-$JOBID.pid"; fi
 # The environment. Everything is set here; nothing is taken from the
 # submitting shell.
 unset JULIA_LOAD_PATH JULIA_PROJECT
+export JULIA_DEPOT_PATH="$DEPOT:"         # the study's depot, then Julia's own; not ~/.julia
 export OPENBLAS_NUM_THREADS=1
 export JULIA_PKG_PRECOMPILE_AUTO=0
 

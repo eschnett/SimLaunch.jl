@@ -40,6 +40,7 @@ struct Site
     default_queue::Union{String,Nothing}
     gpu::Union{GPUs,Nothing}
     julia_bin::String
+    depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
     precompile_on::String
     precompile_tasks::Union{Int,Nothing}
@@ -111,6 +112,7 @@ function load_site(name::AbstractString)
                 slurm === nothing ? nothing : get(slurm, "default_queue", nothing),
                 gpu,
                 get(julia, "bin", "julia"),
+                get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
                 get(julia, "precompile_on", "login"),
                 get(julia, "precompile_tasks", nothing),
@@ -182,14 +184,16 @@ rsync_target(site::Site, path) = islocal(site) ? path : "$(site.host):$path"
 "Copy the contents of the local directory `src` into `dst` on the site. Nothing is deleted there."
 function push_tree(site::Site, src, dst)
     runsite(site, "mkdir -p " * q(dst))
-    run(`rsync -a $(src * "/") $(rsync_target(site, dst * "/"))`)
+    success(pipeline(`rsync -a $(src * "/") $(rsync_target(site, dst * "/"))`; stdout, stderr)) ||
+        fail("copying $src to $(site.name):$dst failed (rsync's message is above); try again")
     return
 end
 
 "Copy one local file to the path `dst` on the site."
 function push_file(site::Site, src, dst)
     runsite(site, "mkdir -p " * q(dirname(dst)))
-    run(`rsync -a $src $(rsync_target(site, dst))`)
+    success(pipeline(`rsync -a $src $(rsync_target(site, dst))`; stdout, stderr)) ||
+        fail("copying $src to $(site.name):$dst failed (rsync's message is above); try again")
     return
 end
 

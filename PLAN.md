@@ -1,6 +1,11 @@
-# SimLaunch: a run tool for local and cluster jobs (proposal)
+# SimLaunch: design and plan
 
-2026-11-15 · Erik Schnetter
+2026-11-16 · Erik Schnetter
+
+The design of SimLaunch, its reasons and its milestones. Milestones 1 and 2
+are implemented; [Plan and open questions](#plan-and-open-questions) says
+what has run where. Sections on status, fetch, restarts, variants, MPI and
+placement describe what milestones 3 and 4 will build.
 
 **Contents**
 
@@ -23,8 +28,8 @@
 ## Summary
 
 SimLaunch is one small command-line tool, `simlaunch`, that takes a Julia
-project from the laptop to any of five sites and back: `local`, `symmetry`,
-`nibi`, `trillium` (CPU) and `trillium-gpu`. It copies an immutable snapshot
+project from the laptop to any of six sites and back: `local`, `symmetry`,
+`nibi`, `fir`, `trillium` (CPU) and `trillium-gpu`. It copies an immutable snapshot
 of every modified package, instantiates and precompiles in the right place,
 generates the batch script from a short job spec and a site profile, submits
 it with SimWatch, and fetches the results.
@@ -44,7 +49,7 @@ touching its files, and combining a chain's outputs is a separate step. The
 tool enforces this by default, with a per-spec opt-out for drivers not yet
 converted.
 
-It replaces knowledge that now lives in three skills and about forty
+It replaces knowledge that now lives in four skills and about forty
 hand-written scripts across five projects: TreeAMR's 13 benchmark scripts,
 TreeWaveOLDG's 11 job scripts, TreeGRRMHD's suite script,
 TreeGeneralizedHarmonic's (`symmetry-run.sh`, `ci/full-suite-symmetry.sh`,
@@ -53,10 +58,11 @@ the `bench/symmetry_mpi_*.sh` family), XCTS (`copy-to-symmetry.sh`,
 directories. The design follows SimFactory's machine database and simulation
 layout, without its Cactus-specific parts.
 
-**Recommendation:** a first version that runs step S1's sweep on Trillium and
-the laptop; then the other sites and the device environments; then queue
-rules, status, fetch and restarts; then the existing scripts are rewritten on
-top of it one at a time.
+**Order of work:** a first version that runs step S1's sweep on Trillium and
+the laptop (done); then the other sites and the device environments (done,
+except for two runs that wait on Nibi and on Symmetry's CPU nodes); then
+queue rules, status, fetch and restarts; then the existing scripts are
+rewritten on top of it one at a time.
 
 ## The problem
 
@@ -198,9 +204,39 @@ The other profiles differ where the table above says they do. Symmetry's has
 `precompile_on = "compute"`, which makes `prepare` submit a short precompile
 job, and per-partition rules: `amddebugq` up to an hour, `amdq` beyond,
 `h200preq` only for runs that checkpoint, and `h200debugq` never chained.
-Nibi's has `partition = false`, since its submit filter chooses. `local` has
-no `[slurm]` table at all: its jobs run as background processes under the
-same layout.
+Nibi's and Fir's have `partition = false`, since their submit filters choose.
+`local` has no `[slurm]` table at all: its jobs run as background processes
+under the same layout.
+
+A site's GPUs are a table of their own, `[slurm.gpu]`: the batch option that
+asks for them, the cores and memory that go with each GPU, the most a job
+gets, and the GPU queues. Symmetry's:
+
+```toml
+[slurm.gpu]                            # H200, 141 GB
+request = "--gres=gpu:h200:%d"
+cores = 8                              # per GPU
+mem = "64G"                            # per GPU; always given
+max = 8
+default_queue = "h200debugq"
+queues = [
+  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2 },
+  { partition = "h200q",      max_time = "24:00:00" },
+]
+```
+
+Where the GPU nodes are another CPU than the CPU nodes, the table says where
+to precompile for them. Fir's login and CPU nodes are both Zen 5 and its GPU
+nodes Zen 4, so its profile has `precompile_on = "login"` under `[julia]` and
+`precompile_on = "compute"` under `[slurm.gpu]`. Symmetry's H200 nodes are
+Intel, a third CPU type besides its login node and its AMD nodes.
+
+Trillium's GPU cluster is a Slurm cluster of its own with its own login node,
+so it is a site of its own, `trillium-gpu`. Its `[connect]` table has
+`host = "trillium"` for files, since both clusters see the same file systems,
+and `via = "trig-login01"` for commands, which run there through the first
+connection. Its directories are not the CPU cluster's, since the two prepare
+for different CPUs.
 
 A profile also lists its known traps as data the generator acts on, for
 example `exclusive_breaks_threaded_subprocess = true` on Symmetry, so a
@@ -235,6 +271,7 @@ resolves:
   src/HexCGSEM/  src/HexMeshes/  src/SpacetimeMetrics/  …
   variants/<name>/src/…     further versions, for comparisons in one job
   envs/<variant>-<kind>/    environments written by prepare
+  depot/                    the study's Julia depot: its compiled caches
   snapshot.toml             what was copied, from where, at which commit
   jobs/                     generated batch scripts
 <scratch root>/<study>/
@@ -309,8 +346,23 @@ flags.
    `prepare` can be interrupted while that job waits in the queue; run again,
    it finds the job and continues.
 
-**The precompile lock.** Two of the tool's jobs never precompile the same
-depot at once. The lock is a directory on the site, made by `prepare` over
+**The study's depot.** Every study has a Julia depot of its own on each site,
+`<code root>/<study>/depot/`, and its jobs run with
+`JULIA_DEPOT_PATH="<depot>:"`: the study's depot, then the depots that come
+with Julia, and not `~/.julia`. Its `compiled/` directory holds the study's
+precompiled caches; `packages`, `artifacts`, `registries`, `clones` and
+`scratchspaces` are links into the site's depot, since what is installed
+there is written once and never changes. The reason is a failure seen on
+Trillium on 2026-11-16: with one shared depot, preparing a second study wrote
+a newer cache of a package both use (SpecialFunctions), and the first study's
+caches, built against the older one, were then rejected and compiled again.
+A study's caches are now touched only by its own `prepare`, so they are as
+immutable as its sources, and `clean` removes them with the study. The cost
+is disk space in the code root: each study compiles its dependencies again
+(XCTS-harmonic on Trillium: 104 MB, half a minute).
+
+**The precompile lock.** Two of the tool's jobs never precompile on one site
+at once. The lock is a directory on the site, made by `prepare` over
 ssh (`mkdir` is atomic), holding the precompile job's ID and removed by that
 job's exit trap; a lock whose job `squeue` no longer knows is stale and is
 taken over. The lock binds only what the tool submits. A hand-written script
@@ -788,6 +840,10 @@ and for clusters that are down.
    and `--dry-run`; per-site spec tables and the resource check. Done when
    step S1's sweep runs from one spec on `local` and on Trillium. About two
    days.
+
+   Done on 2026-11-15: all six runs on Trillium (job 2865234), and on
+   `local` the one run that fits into the laptop's 36 GB. Not implemented:
+   the memory part of the resource check, and `--snapshot-pins`.
 2. **The other sites and the device environments.** Profiles for Symmetry,
    Nibi and Trillium's GPUs; the remote precompile job and its lock; the
    `cuda` environment; the report of version differences between sites. Done
@@ -795,6 +851,21 @@ and for clusters that are down.
    Symmetry H200 and a Trillium H100, and a TreeWaveOLDG sequential job with
    a thread scan runs on Symmetry. About three days, most of it testing each
    site.
+
+   Implemented on 2026-11-16, with a profile for Fir and the per-study depot
+   in addition. Nibi's compute nodes and Symmetry's CPU nodes were down, so
+   two of the runs went elsewhere:
+
+   | Run | Site | Job | Result |
+   | --- | --- | --- | --- |
+   | S1's sweep | Fir (for Nibi) | 4362202 | six runs, `M_irr` identical to Trillium's |
+   | Octant smoke row | Trillium, one H100 | 1342940 | finished |
+   | Octant smoke row | Symmetry, one H200 | 599434 | finished, same values; precompile job 599432 |
+   | TreeWaveOLDG thread scan, pinned | Trillium (for Symmetry) | 2869575 | 1 to 192 threads, `rhs` 40 times faster |
+
+   Open: S1's sweep on Nibi, and the thread scan on Symmetry's CPU nodes,
+   when they are back. Not yet seen on a cluster: a version report that
+   lists differences, and a precompile lock that is held or stale.
 3. **Queue rules, status, fetch, restarts.** SimLaunch delivers the restart
    contract and `simlaunch check-restart`. Converting TreeGeneralizedHarmonic's
    three checkpointing drivers is a separate task in that repository, done

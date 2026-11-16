@@ -2,7 +2,7 @@
 
 stamp() = Dates.format(now(), dateformat"yyyymmdd-HHMMSS")
 
-prepared_file(site::Site, study) = joinpath(study_code(site, study), "prepared")
+prepared_file(site::Site, study) = joinpath(study_depot(site, study), "prepared")
 
 "A combination's line in the study's `prepared` file on a site."
 function combo_line(c::Combo)
@@ -32,6 +32,18 @@ function prepare_preamble(io::IO, site::Site, study)
           CODE=$(shpath(study_code(site, study)))
           SCRATCH=$(shpath(study_scratch(site, study)))
           JULIA=$(shpath(site.julia_bin))
+          DEPOT=$(shpath(study_depot(site, study)))
+          SITE_DEPOT=$(shpath(site.depot))
+
+          # The study's own depot: its compiled caches are its own, so another
+          # study's prepare cannot make them stale. What is installed once and
+          # never changes is shared with the site's depot.
+          mkdir -p "\$DEPOT/compiled"
+          for d in packages artifacts registries clones scratchspaces; do
+              mkdir -p "\$SITE_DEPOT/\$d"
+              [ -e "\$DEPOT/\$d" ] || ln -s "\$SITE_DEPOT/\$d" "\$DEPOT/\$d"
+          done
+          export JULIA_DEPOT_PATH="\$DEPOT:"       # then Julia's own depots; not ~/.julia
 
           unset JULIA_LOAD_PATH JULIA_PROJECT
           export JULIA_PKG_PRECOMPILE_AUTO=0
@@ -56,7 +68,7 @@ function precompile_block(io::IO, c::Combo; instantiate::Bool)
     c.env == "default" || println(io, "$julia -e $(q(ENV_KINDS[c.env].warm))")
     print(io, """
           $julia "\$CODE"/tools/check_precompiled.jl
-          grep -qxF $(q(combo_line(c))) "\$CODE/prepared" 2>/dev/null || echo $(q(combo_line(c))) >> "\$CODE/prepared"
+          grep -qxF $(q(combo_line(c))) "\$DEPOT/prepared" 2>/dev/null || echo $(q(combo_line(c))) >> "\$DEPOT/prepared"
           """)
     return
 end

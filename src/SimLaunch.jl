@@ -1,5 +1,5 @@
 """
-SimLaunch: a run tool for local and cluster jobs. See `PROPOSAL.md` for the
+SimLaunch: a run tool for local and cluster jobs. See `PLAN.md` for the
 design. The tool runs on the laptop; on a site it leaves plain files.
 """
 module SimLaunch

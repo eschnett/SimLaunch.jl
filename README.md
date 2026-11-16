@@ -31,9 +31,6 @@ Milestone 2 of four, partly run.
 - Not yet: MPI, placement, checkpoints and restarts, the choice of a queue by
   rule, `status`, `fetch`, `clean`. A spec that uses one of these is refused
   with the milestone that brings it.
-- Known gap: the studies of a site share one Julia depot. Preparing one
-  study can make another study's compiled cache stale; that study's next job
-  then stops at its check, and `prepare` run again repairs it.
 
 ## Installation
 
@@ -69,7 +66,9 @@ simlaunch submit s1 jobs/s1-sweep.toml --site trillium
 under the same directory layout. A study is never rewritten: a changed source
 needs a new study name.
 
-Each site resolves its own package versions. `prepare` keeps a copy of every
+Each study has its own compiled caches on a site (`<code>/<study>/depot/`),
+so preparing one study does not disturb another. Each site resolves its own
+package versions. `prepare` keeps a copy of every
 manifest a site wrote in `~/.cache/simlaunch/.sites/` and prints the packages
 whose versions differ from the study's other prepared sites.
 
@@ -125,4 +124,4 @@ allocation has, or more time or nodes than its queue allows.
 
 ## Design
 
-[`PROPOSAL.md`](PROPOSAL.md) has the design, its reasons and the plan.
+[`PLAN.md`](PLAN.md) has the design, its reasons and the plan.

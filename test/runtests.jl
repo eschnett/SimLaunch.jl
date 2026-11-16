@@ -94,6 +94,7 @@ end
           scratch = "$(joinpath(root, "site", "scratch"))"
           [julia]
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
+          depot = "$(joinpath(root, "depot"))"
           registry_update = false
           """)
     for name in ("trillium", "trillium-gpu", "symmetry", "nibi")
@@ -118,6 +119,7 @@ end
           queues = [{ partition = "gpuq", max_time = "1:00:00", max_gpus = 1 }]
           [julia]
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
+          depot = "$(joinpath(root, "depot"))"
           registry_update = false
           precompile_on = "compute"
           """)
@@ -336,7 +338,10 @@ end
             end
             @test combo_line.(needed) == ["envs/default-dates\t\tgpu"]
             @test !ispath(lock_dir(cluster))                                     # given back by the job
-            @test readlines(joinpath(ccode, "prepared")) == ["envs/default-dates\t\tgpu"]
+            @test readlines(joinpath(ccode, "depot", "prepared")) == ["envs/default-dates\t\tgpu"]
+            # the caches are the study's own; the packages are the site's
+            @test "Toy" in readdir(joinpath(ccode, "depot", "compiled", "v$(VERSION.major).$(VERSION.minor)"))
+            @test islink(joinpath(ccode, "depot", "packages"))
             env = TOML.parsefile(joinpath(ccode, "envs", "default-dates", "Project.toml"))
             @test issubset(["Toy", "ToyDep", "Dates"], keys(env["deps"]))
             @test env["sources"]["ToyDep"]["path"] == joinpath(ccode, "src", "ToyDep")
