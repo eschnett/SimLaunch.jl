@@ -1,6 +1,7 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
-                 prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions
+                 prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions,
+                 resubmit, status, fetch, usage, clean, combine, check_restart
 using Test
 using TOML
 
@@ -34,6 +35,48 @@ function make_project(root)
           write("result.csv", "n,answer\\n\$n,\$(Toy.answer(n))\\n")
           length(ARGS) > 1 && ARGS[2] == "fail" && exit(7)
           length(ARGS) > 1 && ARGS[2] == "sleep" && sleep(600)
+          """)
+    # a driver that follows the restart contract: it counts, and checkpoints after every step
+    write(joinpath(toy, "examples", "count.jl"), """
+          using Toy
+          opts = Dict(String.(split(a, "=")) for a in ARGS)
+          steps, delay = parse(Int, opts["steps"]), parse(Float64, get(opts, "delay", "0.3"))
+          ck, from = get(opts, "checkpoint", nothing), get(opts, "restart_from", nothing)
+          walltime = parse(Float64, get(opts, "walltime", "Inf"))
+          t0 = time()
+          first, total = 1, 0
+          if from !== nothing
+              done = maximum(parse(Int, f[6:end]) for f in readdir(from) if startswith(f, "step-") && !endswith(f, ".tmp"))
+              first, total = done + 1, parse(Int, read(joinpath(from, "step-\$done"), String))
+          end
+          open("count.csv", "w") do io
+              println(io, "step,total")
+              for k in first:steps
+                  sleep(delay)
+                  global total += Toy.answer(k)
+                  println(io, k, ",", total); flush(io)
+                  if ck !== nothing                     # written under a temporary name, then renamed
+                      write(joinpath(ck, "step-\$k.tmp"), string(total))
+                      mv(joinpath(ck, "step-\$k.tmp"), joinpath(ck, "step-\$k"))
+                      rm(joinpath(ck, "step-\$(k - 1)"); force = true)
+                  end
+                  time() - t0 > walltime && k < steps && exit(3)
+              end
+          end
+          """)
+    # the project's own comparison: the pieces of a chain against one uninterrupted job
+    write(joinpath(toy, "examples", "compare.jl"), """
+          rows(dir) = Dict(parse(Int, a) => parse(Int, b) for (a, b) in split.(readlines(joinpath(dir, "count.csv"))[2:end], ","))
+          whole, pieces = rows(ARGS[1]), merge(rows.(ARGS[2:end])...)
+          println("whole: ", length(whole), " steps; chain: ", length(pieces), " steps in ", length(ARGS) - 1, " jobs")
+          whole == pieces || exit(1)
+          """)
+    write(joinpath(toy, "examples", "combine.jl"), """
+          open("combined.csv", "w") do io
+              for dir in ARGS, line in readlines(joinpath(dir, "count.csv"))[2:end]
+                  println(io, line)
+              end
+          end
           """)
     write(joinpath(toy, "Manifest.toml"), "# must not be copied\n")
     write(joinpath(toy, "backup.jl~"), "")
@@ -108,14 +151,12 @@ end
           scratch = "$(joinpath(root, "cluster", "scratch"))"
           [slurm]
           node = { cores = 4, header = ["--exclusive"] }
-          default_queue = "cpuq"
-          queues = [{ partition = "cpuq", max_time = "1:00:00" }]
+          queues = [{ partition = "cpuq", max_time = "1:00:00" }, { partition = "preq", max_time = "1:00:00", preempt = true }]
           [slurm.gpu]
           request = "--gres=gpu:%d"
           cores = 2
           mem = "8G"
           max = 2
-          default_queue = "gpuq"
           queues = [{ partition = "gpuq", max_time = "1:00:00", max_gpus = 1 }]
           [julia]
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
@@ -178,11 +219,17 @@ end
             many = join(["[[run]]\nlabel = \"r$i\"\ncmd = \"examples/hello.jl n=$i\"\n" for i in 1:7], "\n")
             @test_throws "224 threads" job(spec_text(many), trillium)             # 7 × 32 > 192
             @test_throws "at most 1:00:00" job(spec_text(RUNS), trillium; queue = "debug")
-            @test_throws "no less than 0:15:00" job(replace(spec_text(RUNS), "3:00:00" => "0:10:00"), trillium)
+            # the queue is chosen by rule: the first in the profile's order that fits
+            short = replace(spec_text(RUNS), "3:00:00" => "0:10:00")
+            @test job(short, trillium).queue.partition == "debug"
+            @test_throws "no less than 0:15:00" job(short, trillium; busy = Set(["debug"]))   # debug takes one job at a time
+            @test job(replace(spec_text(RUNS), "3:00:00" => "0:30:00"), trillium; busy = Set(["debug"])).queue.partition == "compute"
             @test_throws "no queue" job(spec_text(RUNS), trillium; queue = "nonesuch")
             @test_throws "unknown key" job(spec_text(RUNS; top = "tiem = \"1:00:00\""), trillium)
-            @test_throws "milestone 3" job(spec_text(RUNS; top = "checkpoints = true"), trillium)
-            @test_throws "milestone 3" job(spec_text(RUNS * "ranks = 8\n"), trillium)
+            @test_throws "[restart] table" job(spec_text(RUNS; top = "checkpoints = true"), trillium)
+            @test_throws "needs `mpi`" job(spec_text(RUNS * "ranks = 8\n"), trillium)
+            @test_throws "milestone 4" job(spec_text(RUNS * "julia = \"+1.13\"\n"), trillium)
+            @test_throws "no variant" job(spec_text(RUNS * "variant = \"base\"\n"), trillium)
             # a spec written for one site names it, and has no site tables
             one = "name = \"hello\"\nsite = \"symmetry\"\ntime = \"1:00:00\"\n" * RUNS
             @test_throws "for site symmetry only" job(one, trillium)
@@ -222,12 +269,12 @@ end
                 resolve(load_spec(spec(text)), load_site(site); study = "toy", project = "Toy", kw...)
             j = job("symmetry")
             @test j.gpus == 1 && j.cores == 8 && j.queue.partition == "h200debugq" && j.runs[1].threads == 8
-            @test j.envdir == "envs/default-cuda"
+            @test j.runs[1].envdir == "envs/default-cuda"
             @test combo_line(only(combos(j))) == "envs/default-cuda\t\tgpu"
             j = job("trillium-gpu")
-            @test j.gpus == 2 && j.cores == 48 && j.queue.partition == "compute"
+            @test j.gpus == 2 && j.cores == 48 && j.queue.partition == "debug"
             j = job("nibi")
-            @test j.gpus == 0 && j.queue === nothing && j.envdir == "src/Toy"
+            @test j.gpus == 0 && j.queue === nothing && j.runs[1].envdir == "src/Toy"
             @test combo_line(only(combos(j))) == "Toy"
             for (site, name) in (("symmetry", "symmetry-gpu"), ("trillium-gpu", "trillium-gpu"), ("nibi", "nibi-hello"))
                 script = generate(job(site))
@@ -237,10 +284,12 @@ end
                 @test success(`bash -n $reference`)
             end
             # refusals
-            @test_throws "at most 2" job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3"))
+            @test job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3")).queue.partition == "h200q"
+            @test_throws "at most 2 GPUs" job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3"), queue = "h200debugq")
             @test_throws "at most 4" job("trillium-gpu"; text = replace(gpu_spec, "gpus = 2" => "gpus = 5"))
-            @test_throws "at most 1:00:00" job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"))
-            @test job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200q").time == 7200
+            @test_throws "at most 1:00:00" job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200debugq")
+            @test job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00")).queue.partition == "h200q"
+            @test_throws "pre-emptible" job("symmetry"; queue = "h200preq")
             @test_throws "for GPU jobs" job("symmetry"; queue = "amdq")
             @test_throws "GPU jobs only" job("trillium-gpu"; text = replace(gpu_spec, "resources = { gpus = 2 }" => ""))
             @test_throws "has none" job("trillium"; text = replace(gpu_spec, "site.nibi" => "site.trillium",
@@ -248,6 +297,7 @@ end
             @test_throws "chooses the partition" job("nibi"; queue = "cpubase")
             @test_throws "at most 168:00:00" job("nibi"; text = replace(gpu_spec, "3:00:00" => "8-00:00:00"))
             @test_throws "no environment" job("symmetry"; text = replace(gpu_spec, "\"cuda\"" => "\"opencl\""))
+            @test job("symmetry"; text = replace(gpu_spec, "\"cuda\"" => "\"test+cuda\"")).runs[1].envdir == "envs/default-test+cuda"
             # the second login node is reached through the first
             cmd = SimLaunch.sitecmd(load_site("trillium-gpu"), "echo 'a b'")
             @test cmd.exec[1:2] == ["ssh", "trillium"] && startswith(cmd.exec[3], "ssh trig-login01 ")
@@ -373,6 +423,233 @@ end
                 prepare("toy"; site = "local", specs = [f], io = out)
             end
             @test occursin(r"julia\s+\S+\s+cluster: 1\.0\.0", String(take!(out)))
+        end
+
+        # a spec written for Symmetry: two versions of the package, MPI ranks placed on NUMA domains, two recipes
+        nested = """
+            name = "nested"
+            site = "symmetry"
+            time = "1:00:00"
+            resources = { nodes = 2 }
+            node = "cn[095-096]"
+            sbatch_args = ["--switches=1"]
+            env = "test"
+            placement = "numa"
+            mpi = "jll"
+
+            [after]
+            cmd = "awk -f \\"\$PROJECT\\"/bench/table.awk */output.log"
+
+            [[run]]
+            label = "base-8r"
+            variant = "base"
+            cmd = "examples/hello.jl n=1"
+            ranks = 8
+            nodes = 1
+
+            [[run]]
+            label = "new-16r"
+            cmd = "examples/hello.jl n=1"
+            ranks = 16
+            mpi = "system"
+            prefix = "perf stat -e cache-misses"
+
+            [[run]]
+            label = "serial"
+            cmd = "examples/hello.jl n=1"
+            vars = { TOYVAR = "x" }
+            """
+        ckpt = """
+            name = "chain"
+            checkpoints = true
+
+            [restart]
+            to = "checkpoint"
+            from = "restart_from"
+            walltime = "walltime"
+            continue_code = 3
+            compare = "examples/compare.jl"
+
+            [combine]
+            cmd = "examples/combine.jl"
+
+            [site.symmetry]
+            time = "12:00:00"
+            resources = { gpus = 1 }
+            env = "cuda"
+
+            [site.cluster]
+            time = "0:10:00"
+
+            [site.local]
+
+            [[run]]
+            label = "c"
+            cmd = "examples/count.jl steps=20 delay=0.3"
+            threads = 1
+            """
+        @testset "variants, MPI, placement and restarts in a spec" begin
+            dest = snapshot(toy; study = "toy2", variants = ["base" => toy])
+            @test isfile(joinpath(dest, "variants", "base", "src", "Toy", "src", "Toy.jl"))
+            @test isfile(joinpath(dest, "variants", "base", "src", "ToyDep", "Project.toml"))
+            snap = load_snapshot("toy2")
+            @test SimLaunch.study_variants(snap) == ["default", "base"]
+            @test SimLaunch.project_home(snap) == realpath(toy)
+            @test_throws "the study's own version" snapshot(toy; study = "toy3", variants = ["default" => toy])
+            job(text, site; kw...) = resolve(load_spec(spec(text)), load_site(site); study = "toy2", project = "Toy",
+                                             variants = ["default", "base"], kw...)
+            j = job(nested, "symmetry")
+            @test j.queue.partition == "amdq" && j.nodes == 2 && j.tasks == 8         # two nodes: not amddebugq
+            @test [r.envdir for r in j.runs] == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
+            @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
+            @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
+            prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
+            @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)
+            @test occursin("set_mpi.jl system", prep) && occursin("module load nvhpc-hpcx-cuda12/24.9", prep)
+            @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "symmetry")
+            @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "symmetry")
+            @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "symmetry")
+            @test_throws "one node only" job(replace(nested, "\"system\"" => "\"jll-fork\""), "symmetry")
+            @test_throws "pin = true" job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\npin = true"), "symmetry")
+            @test_throws "for site symmetry only" job(nested, "trillium")
+            # a chain of jobs: a pre-emptible queue first, and never the queue that is not for chains
+            j = job(ckpt, "symmetry")
+            @test j.checkpoints && j.queue.partition == "h200preq" && j.restart.continue_code == 3
+            @test_throws "not for a chain" job(replace(ckpt, "12:00:00" => "0:30:00"), "symmetry"; queue = "h200debugq")
+            @test_throws "needs `checkpoints = true`" job(replace(ckpt, "checkpoints = true" => ""), "symmetry")
+            @test_throws "a chain of jobs needs" job(gpu_spec, "symmetry"; chain = 2)
+            @test_throws "remove `from`" job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true"), "symmetry")
+            m = job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true", "from = \"restart_from\"" => ""), "symmetry")
+            @test occursin("#SBATCH --requeue\n#SBATCH --open-mode=append", generate(m)) && !occursin("seal_earlier \"\$i\"", generate(m))
+            for (name, text) in (("symmetry-nested", nested), ("symmetry-chain", ckpt))
+                script = generate(job(text, "symmetry"))
+                reference = joinpath(@__DIR__, "reference", "$name.sh")
+                get(ENV, "SIMLAUNCH_UPDATE_REFERENCE", "") == "1" && write(reference, script)
+                @test script == read(reference, String)
+                @test success(`bash -n $reference`)
+            end
+        end
+
+        @testset "the restart source" begin
+            # the newest earlier job with a complete checkpoint: not one that holds temporary names only
+            d = mktempdir()
+            for (job, file) in (("001-a", "step-3"), ("002-b", "step-5.tmp"), ("003-c", ".hidden"), ("004-d", "step-9"))
+                write(joinpath(mkpath(joinpath(d, "chain-c", job, "ck")), file), "x")
+            end
+            helpers = joinpath(pkgdir(SimLaunch), "templates", "job_helpers.sh")
+            source(own) = readchomp(`bash -c "set -u; SCRATCH=$d; SPEC=chain; LABELS=(c); JOBDIRS=($d/chain-c/$own); TEMPORARY=('*.tmp' '*.tmp.*' '.*'); . $helpers; restart_source 0"`)
+            @test source("004-d") == joinpath(d, "chain-c", "001-a", "ck")
+            @test source("005-e") == joinpath(d, "chain-c", "004-d", "ck")
+            @test SimLaunch.q("*.tmp") == "'*.tmp'" && SimLaunch.q("it's") == "'it'\\''s'" && SimLaunch.q("n=3") == "n=3"
+        end
+
+        @testset "a chain of jobs, its disk usage, fetch and clean" begin
+            cluster = load_site("cluster")
+            cscratch = study_scratch(cluster, "toy")
+            f = spec(ckpt)
+            # the driver stops at its walltime after about 8 s, and the next job of the chain continues
+            short = spec(replace(ckpt, "0:10:00\"" => "0:20\"", "walltime = \"walltime\"" => "walltime = \"walltime\"\nmargin = \"0:10\"",
+                                 "steps=20 delay=0.3" => "steps=22 delay=0.5"))
+            @test_throws "not prepared" submit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "cluster", specs = [short], poll = 0.5, io = devnull)
+            end
+            @test_throws "no job of spec chain" resubmit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
+            id = submit("toy", short; site = "cluster", queue = "cpuq", chain = 3, io = devnull)
+            ids = string.(parse(Int, id) .+ (0:2))
+            @test_throws "queued or running" submit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
+            queued = TOML.parsefile(joinpath(cscratch, "chain-c", "simwatch.toml"))
+            @test queued["status"] in ("queued", "running")
+            while !isempty(SimLaunch.active_jobs(cluster, "toy", "chain")); sleep(0.5); end
+            run_dir = joinpath(cscratch, "chain-c")
+            st = TOML.parsefile(joinpath(run_dir, "simwatch.toml"))
+            @test st["status"] == "finished" && st["slurm"]["previous_job_ids"] == [ids[1]]
+            dirs = sort!(filter(startswith(r"\d\d\d-"), readdir(run_dir)))
+            @test dirs == ["001-$(ids[1])", "002-$(ids[2])"]                        # the third job had nothing left to do
+            @test occursin("nothing is left to do", read(joinpath(cscratch, "logs", "chain-$(ids[3]).out"), String))
+            @test occursin("continues from $(joinpath(run_dir, dirs[1], "ck"))", read(joinpath(cscratch, "logs", "chain-$(ids[2]).out"), String))
+            rows(d) = [parse.(Int, split(l, ",")) for l in readlines(joinpath(run_dir, d, "count.csv"))[2:end]]
+            first_rows, second_rows = rows(dirs[1]), rows(dirs[2])
+            @test first_rows[1][1] == 1 && second_rows[1][1] == first_rows[end][1] + 1 && second_rows[end][1] == 22
+            @test second_rows[end][2] == sum(2k + 1 for k in 1:22)
+            @test !iswritable(joinpath(run_dir, dirs[1], "count.csv")) && !iswritable(joinpath(run_dir, dirs[1], "ck"))
+            # disk usage, as each job recorded it
+            use = TOML.parsefile(joinpath(run_dir, "diskusage.toml"))
+            @test [j["dir"] for j in use["job"]] == dirs && all(j -> j["kb"] isa Integer, use["job"])
+            @test st["diskusage"]["kb"] == sum(j["kb"] for j in use["job"])
+            out = IOBuffer()
+            urows = usage("toy"; site = "cluster", io = out)
+            @test [r.dir for r in urows if r.run == "chain-c"] == dirs && occursin("total", String(take!(out)))
+            # status: one table over the sites
+            srows = status(["toy"]; io = devnull)
+            @test any(r -> r.site == "cluster" && r.run == "chain-c" && r.status == "finished", srows)
+            @test any(r -> r.site == "local" && r.run == "hello-bad" && r.status == "failed", srows)
+            # combine: a new directory beside the jobs', read-only
+            combined = only(combine("toy", short; site = "cluster", io = devnull))
+            @test basename(combined) == "combined-1" && length(readlines(joinpath(combined, "combined.csv"))) == 22
+            @test !iswritable(joinpath(combined, "combined.csv"))
+            # fetch: into the project, by site; checkpoints stay behind
+            dest = only(fetch("toy"; site = "cluster", io = devnull))
+            @test dest == joinpath(realpath(toy), ".claude", "data", "toy", "cluster")
+            @test isfile(joinpath(dest, "chain-c", dirs[2], "count.csv")) && isfile(joinpath(dest, "chain-c", "simwatch.toml"))
+            @test !ispath(joinpath(dest, "chain-c", dirs[1], "ck")) && isfile(joinpath(dest, "snapshot.toml"))
+            @test isfile(joinpath(dest, "manifests", "src--Toy.toml")) && isfile(joinpath(dest, "logs", "chain-$(ids[1]).out"))
+            fetch("toy"; site = "cluster", runs = ["chain-c"], with_checkpoints = true, to = joinpath(root, "fetched"), io = devnull)
+            @test isdir(joinpath(root, "fetched", "cluster", "chain-c", dirs[2], "ck"))
+            @test !ispath(joinpath(root, "fetched", "cluster", "dev-n4"))
+            # old checkpoints are deleted only after a yes
+            out = IOBuffer()
+            @test !clean("toy"; site = "cluster", old_checkpoints = true, io = out, input = IOBuffer("n\n"))
+            @test occursin("chain-c/$(dirs[1])/ck", String(take!(out))) && isdir(joinpath(run_dir, dirs[1], "ck"))
+            @test clean("toy"; site = "cluster", old_checkpoints = true, yes = true, io = devnull)
+            @test !ispath(joinpath(run_dir, dirs[1], "ck")) && isdir(joinpath(run_dir, dirs[2], "ck"))
+            @test !iswritable(joinpath(run_dir, dirs[1]))
+            @test only(r for r in usage("toy"; site = "cluster", io = devnull) if r.dir == dirs[1]).ck == 0
+
+            # a job stopped on a pre-emptible queue submits its successor, which starts after it has ended
+            g = spec(replace(ckpt, "name = \"chain\"" => "name = \"pre\"", "steps=20 delay=0.3" => "steps=16 delay=0.4"))
+            id = submit("toy", g; site = "cluster", io = devnull)                    # the pre-emptible queue is chosen
+            pre = joinpath(cscratch, "pre-c")
+            while !any(startswith("step-"), try readdir(joinpath(pre, "001-$id", "ck")) catch; String[] end); sleep(0.2); end
+            run(`kill -TERM $(readchomp(joinpath(ENV["FAKESLURM"], "$id.pid")))`)
+            sleep(1)
+            while !isempty(SimLaunch.active_jobs(cluster, "toy", "pre")); sleep(0.5); end
+            next = readchomp(joinpath(cscratch, "logs", "pre-$id.next"))
+            st = TOML.parsefile(joinpath(pre, "simwatch.toml"))
+            @test st["status"] == "finished" && st["slurm"]["job_id"] == next && st["slurm"]["partition"] == "preq"
+            @test isdir(joinpath(pre, "002-$next")) && !iswritable(joinpath(pre, "001-$id"))
+            @test occursin("job $next continues it", read(joinpath(cscratch, "logs", "pre-$id.out"), String))
+            done = merge([Dict(parse.(Int, split(l, ","))[1] => l for l in readlines(joinpath(pre, d, "count.csv"))[2:end])
+                          for d in ("001-$id", "002-$next")]...)
+            @test sort!(collect(keys(done))) == 1:16
+        end
+
+        @testset "check-restart" begin
+            f = spec(ckpt)
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [f])
+            end
+            out = IOBuffer()
+            @test check_restart("toy", f; site = "local", poll = 0.3, io = out)
+            text = String(take!(out))
+            @test occursin("directory is unchanged", text) && occursin("check-restart: passed", text)
+            # a project whose comparison does not accept the chain
+            bad = spec(replace(ckpt, "examples/compare.jl" => "examples/hello.jl n=1 fail"))
+            out = IOBuffer()
+            @test !check_restart("toy", bad; site = "local", poll = 0.3, io = out)
+            @test occursin("FAILED: the comparison", String(take!(out)))
+            @test_throws "needs `compare`" check_restart("toy", spec(replace(ckpt, "compare = \"examples/compare.jl\"" => "")); site = "local", io = devnull)
+        end
+
+        @testset "clean" begin
+            cluster = load_site("cluster")
+            out = IOBuffer()
+            @test !clean("toy"; site = "cluster", io = out, input = IOBuffer("\n"))
+            @test occursin("delete both directories?", String(take!(out))) && isdir(study_code(cluster, "toy"))
+            @test clean("toy"; site = "cluster", yes = true, io = devnull)
+            @test !ispath(study_code(cluster, "toy")) && !ispath(study_scratch(cluster, "toy"))
+            @test isfile(joinpath(ENV["SIMLAUNCH_CACHE"], "toy", "snapshot.toml"))   # the snapshot stays
+            @test all(r -> r.site == "local", status(["toy"]; io = devnull))
         end
     end
     run(`chmod -R u+w $root`)

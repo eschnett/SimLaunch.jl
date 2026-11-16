@@ -25,7 +25,7 @@ Keep the tables of contents current.
 ## Commands
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.test()'            # about 30 s, runs local jobs
+julia --project=. -e 'using Pkg; Pkg.test()'            # about 2 min, runs local jobs
 SIMLAUNCH_UPDATE_REFERENCE=1 julia --project=. -e 'using Pkg; Pkg.test()'
                                                         # rewrite test/reference/*.sh
 julia --project=. -m SimLaunch submit <study> <spec> --site trillium --dry-run
@@ -39,18 +39,29 @@ profile directory; the tests use both.
 - A changed generated script changes `test/reference/*.sh`, one per site:
   regenerate them and read the diff.
 - The tests run a Slurm site on the laptop: the profile `cluster` in
-  `test/runtests.jl`, with `test/fakeslurm/sbatch` and `squeue` on the
-  `PATH`. It covers the precompile job, its lock and a GPU job's header, not
-  a real queue.
+  `test/runtests.jl`, with `test/fakeslurm/sbatch`, `squeue` and `scancel`
+  on the `PATH`. It covers the precompile job and its lock, chains, a
+  stopped job's successor and a GPU job's header, not a real queue. MPI
+  needs packages from the network and is not in the tests: try it by hand
+  on `local`, whose profile has a `jll` recipe.
+- Text for bash goes through `q` or `shpath` (`src/sites.jl`), never
+  `Base.shell_escape`, which leaves `*` and `~` bare.
+- A snippet for `readsite` must end with status 0: a trailing
+  `[ -d x ] && echo x` makes the whole command fail. End with `; true`.
+- `templates/job_helpers.sh` is copied into every script unchanged, so it
+  reads only variables that `generate` always sets.
 - An environment kind (`ENV_KINDS` in `src/spec.jl`) names the packages
-  `templates/make_env.jl` adds. A new kind is a line there.
+  `templates/make_env.jl` adds. A new kind is a line there. The Julia files
+  a study carries in its `tools/` are listed in `TOOLS` (`src/snapshot.jl`).
 - Generated scripts are plain bash that must run without SimLaunch. The
   shared part is `templates/job_helpers.sh`.
 - Manifests are never copied to a site, and nothing that depends on cores,
   threads, memory or time is shared between sites (PLAN.md, "Source
   snapshots" and "Job specs and generated scripts").
-- A spec field of a later milestone is refused by name (`LATER_KEYS` in
+- A spec field that is not implemented is refused by name (`LATER_KEYS` in
   `src/spec.jl`), never ignored.
+- `clean` and `--old-checkpoints` delete on a site: ask Erik first, as for
+  a job. Never pass `yes = true` or `--yes` outside the tests.
 - A study's compiled caches are its own: jobs and `prepare` run with
   `JULIA_DEPOT_PATH="<study>/depot:"`, never with `~/.julia` (PLAN.md,
   "Prepare").

@@ -56,6 +56,8 @@ include("snapshot.jl")
 include("spec.jl")
 include("generate.jl")
 include("actions.jl")
+include("manage.jl")
+include("restart.jl")
 include("cli.jl")
 
 end # module SimLaunch

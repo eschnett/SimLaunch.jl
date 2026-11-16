@@ -1,0 +1,53 @@
+# TreeAMR's nested-mesh ghost fill (`bench/nested.jl`) for two versions of the
+# package in one job, as `bench/symmetry_nested.sh` runs it: one rank per
+# NUMA domain, under two MPI recipes. Take the snapshot with the baseline as
+# a variant:
+#
+#     simlaunch snapshot ~/src/jl/TreeAMR --study nested1 --variant base=~/src/jl/TreeAMR-main
+#
+# Both versions run the study's own `bench/nested.jl`; they differ in the
+# package only. Written for Symmetry's 64-core nodes with 8 NUMA domains.
+name = "nested"
+site = "symmetry"
+time = "1:00:00"
+resources = { nodes = 1 }           # { nodes = 2 } and `nodes = 2` in a run spread its ranks over two nodes
+env = "test"                        # the benchmark needs the test dependencies
+placement = "numa"
+vars = { TREEAMR_BENCH_N = "16" }
+
+[[run]]
+label = "base-1x1"
+variant = "base"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 1
+threads = 1
+
+[[run]]
+label = "new-1x1"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 1
+threads = 1
+
+[[run]]
+label = "base-8x8"
+variant = "base"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 8
+threads = 8
+
+[[run]]
+label = "new-8x8"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 8
+threads = 8
+
+[[run]]
+label = "new-8x8-system"            # the same under the site's MPI
+cmd = "bench/nested.jl mpi"
+mpi = "system"
+ranks = 8
+threads = 8

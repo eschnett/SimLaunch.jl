@@ -4,6 +4,9 @@
 const DEFAULT_EXCLUDES = [".git", "Manifest*.toml", "*~", ".#*", "#*#", ".DS_Store",
                           "out/", "*.jls", ".claude/data/"]
 
+"The Julia files of `templates/` that every study carries in its `tools/`."
+const TOOLS = ["check_precompiled.jl", "make_env.jl", "set_mpi.jl", "mpiexec.jl"]
+
 struct SourcePackage
     name::String
     path::String                      # on the laptop
@@ -125,62 +128,90 @@ function warn_pins(pins)
 end
 
 """
-    snapshot(project; study)
-
-Copy the project at `project` and its path packages into the cache as the
-study `study`. Returns the snapshot's directory.
+Copy a project and its path packages into `tmp/<prefix>/src`, keeping their
+relative positions. Returns the project's path there, the packages' records
+and the pins.
 """
-function snapshot(project::AbstractString; study::AbstractString)
-    checkname("a study name", study)
-    project = abspath(expanduser(project))
-    isdir(project) || fail("no such directory: $project")
-    project = realpath(project)
-    dest = joinpath(cache_root(), study)
-    ispath(dest) && fail("study $(repr(study)) exists already ($dest). A changed source makes a new study: choose another name, or remove the old one.")
-
+function copy_packages(project, tmp, prefix)
     packages, pins = collect_packages(project)
     warn_pins(pins)
     # a package inside another one is copied with it
     packages = [p for p in packages
                 if !any(o -> o.path != p.path && startswith(p.path, o.path * "/"), packages)]
     root = common_root([p.path for p in packages])
+    records = Dict{String,Any}[]
+    for p in packages
+        rel = relpath(p.path, root)
+        dest = joinpath(prefix, "src", rel)
+        target = joinpath(tmp, dest)
+        mkpath(target)
+        excludes = ["--exclude=$e" for e in DEFAULT_EXCLUDES]
+        ignore = joinpath(p.path, ".simlaunchignore")
+        isfile(ignore) && push!(excludes, "--exclude-from=$ignore")
+        run(`rsync -a $excludes $(p.path * "/") $(target * "/")`)
+        prov = provenance(p.path)
+        record = Dict{String,Any}("name" => p.name, "path" => p.path, "dest" => dest, "git" => prov.git)
+        if prov.git
+            record["branch"], record["sha"], record["dirty"] = prov.branch, prov.sha, prov.dirty
+            if prov.dirty
+                stem = joinpath("provenance", isempty(prefix) ? p.name : replace(prefix, "/" => "-") * "-" * p.name)
+                write(joinpath(tmp, stem * ".status"), prov.status * "\n")
+                write(joinpath(tmp, stem * ".diff"), prov.diff * "\n")
+                record["diff"] = stem * ".diff"
+            end
+        end
+        push!(records, record)
+    end
+    return relpath(project, root), records, pins
+end
+
+"""
+    snapshot(project; study, variants = [])
+
+Copy the project at `project` and its path packages into the cache as the
+study `study`. `variants` are pairs `name => directory`: further versions of
+the project, for comparisons inside one job. Returns the snapshot's
+directory.
+"""
+function snapshot(project::AbstractString; study::AbstractString, variants = Pair{String,String}[])
+    checkname("a study name", study)
+    project = abspath(expanduser(project))
+    isdir(project) || fail("no such directory: $project")
+    project = realpath(project)
+    dest = joinpath(cache_root(), study)
+    ispath(dest) && fail("study $(repr(study)) exists already ($dest). A changed source makes a new study: choose another name, or remove the old one.")
+    for (name, dir) in variants
+        checkname("a variant's name", name)
+        name == "default" && fail("\"default\" is the study's own version; choose another name for the variant")
+        isdir(expanduser(dir)) || fail("variant $name: no such directory: $dir")
+    end
+    allunique(first.(variants)) || fail("two variants have the same name")
 
     tmp = dest * ".tmp"
     rm(tmp; recursive = true, force = true)
     mkpath(joinpath(tmp, "provenance"))
     try
-        records = Dict{String,Any}[]
-        for p in packages
-            rel = relpath(p.path, root)
-            target = joinpath(tmp, "src", rel)
-            mkpath(target)
-            excludes = ["--exclude=$e" for e in DEFAULT_EXCLUDES]
-            ignore = joinpath(p.path, ".simlaunchignore")
-            isfile(ignore) && push!(excludes, "--exclude-from=$ignore")
-            run(`rsync -a $excludes $(p.path * "/") $(target * "/")`)
-            prov = provenance(p.path)
-            record = Dict{String,Any}("name" => p.name, "path" => p.path, "dest" => joinpath("src", rel),
-                                      "git" => prov.git)
-            if prov.git
-                record["branch"], record["sha"], record["dirty"] = prov.branch, prov.sha, prov.dirty
-                if prov.dirty
-                    write(joinpath(tmp, "provenance", p.name * ".status"), prov.status * "\n")
-                    write(joinpath(tmp, "provenance", p.name * ".diff"), prov.diff * "\n")
-                    record["diff"] = joinpath("provenance", p.name * ".diff")
-                end
-            end
-            push!(records, record)
+        rel, records, pins = copy_packages(project, tmp, "")
+        variant_records = Dict{String,Any}[]
+        for (name, dir) in variants
+            vrel, vrecords, _ = copy_packages(realpath(abspath(expanduser(dir))), tmp, joinpath("variants", name))
+            vrel == rel ||
+                fail("variant $name: its project is at $vrel beside its packages, the study's at $rel; a variant is another version of the same project")
+            push!(variant_records, Dict{String,Any}("name" => name, "package" => vrecords))
         end
-        cp(joinpath(PKGROOT, "templates", "check_precompiled.jl"),
-           joinpath(mkpath(joinpath(tmp, "tools")), "check_precompiled.jl"))
+        tools = mkpath(joinpath(tmp, "tools"))
+        for tool in TOOLS
+            cp(joinpath(PKGROOT, "templates", tool), joinpath(tools, tool))
+        end
         meta = Dict{String,Any}("study" => study,
                                 "created" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
                                 "simlaunch" => VERSION_STRING,
-                                "project" => relpath(project, root),
+                                "project" => rel,
                                 "pins" => [Dict{String,Any}("name" => pin.name, "owner" => pin.owner,
                                                             "rev" => something(pin.rev, ""))
                                            for pin in pins],
-                                "package" => records)
+                                "package" => records,
+                                "variant" => variant_records)
         open(joinpath(tmp, "snapshot.toml"), "w") do io
             TOML.print(io, meta; sorted = true)
         end
@@ -190,6 +221,17 @@ function snapshot(project::AbstractString; study::AbstractString)
         rethrow()
     end
     return dest
+end
+
+"The names of a study's variants, with \"default\" for its own version."
+study_variants(snap) = ["default"; [v["name"] for v in get(snap, "variant", [])]]
+
+"The directory on the laptop that the study's project was copied from."
+function project_home(snap)
+    for p in snap["package"]
+        p["dest"] == joinpath("src", snap["project"]) && return p["path"]
+    end
+    fail("the snapshot of study $(snap["study"]) does not record where its project came from")
 end
 
 "The record of a study's snapshot."

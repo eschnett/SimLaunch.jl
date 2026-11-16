@@ -16,8 +16,7 @@ scratch = "/mnt/beegfs/eschnetter/claude/studies"
 # one kind may be rejected on another; the job's check before its runs then
 # stops it.
 node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
-default_queue = "amddebugq"            # starts much sooner than amdq
-queues = [
+queues = [                             # in the order of preference: amddebugq starts much sooner
   { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1 },
   { partition = "amdq",      max_time = "24:00:00", max_nodes = 16 },
 ]
@@ -27,10 +26,11 @@ request = "--gres=gpu:h200:%d"
 cores = 8                              # per GPU; more often blocks on the group's limits
 mem = "64G"                            # per GPU; always given, the default is 21 GB per core
 max = 8
-default_queue = "h200debugq"           # once, to get started; never chained
 queues = [
-  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2 },
+  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },   # to get started; never chained
   { partition = "h200q",      max_time = "24:00:00" },
+  # no group limits, but stopped whenever h200q needs the GPUs: SIGTERM, then SIGKILL after 30 s
+  { partition = "h200preq",   max_time = "24:00:00", preempt = true },
 ]
 
 [julia]
@@ -39,3 +39,22 @@ modules = []
 precompile_on = "compute"              # the login node is Intel, the compute nodes are AMD
 precompile_time = "0:30:00"
 compute_internet = true
+
+# MPICH_jll under srun; the variable keeps MPICH from crashing in its first collective.
+[mpi.jll]
+launcher = "srun"
+launcher_args = ["--mpi=pmi2"]
+env = { MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE = "0", OMP_NUM_THREADS = "1" }
+
+# MPICH_jll under its own mpiexec, Hydra forking the ranks: one node, as the GPU jobs need.
+[mpi.jll-fork]
+binary = "jll"
+launcher = "mpiexec"
+env = { HYDRA_LAUNCHER = "fork", MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE = "0", OMP_NUM_THREADS = "1" }
+
+# HPC-X's Open MPI, CUDA-aware, under its own mpiexec. Not yet run through SimLaunch.
+[mpi.system]
+modules = ["nvhpc-hpcx-cuda12/24.9"]
+launcher = "mpiexec"
+multi_node = true
+env = { OMP_NUM_THREADS = "1" }

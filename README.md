@@ -10,11 +10,16 @@ the batch script from a short job spec and a site profile, and submits it with
 - [Installation](#installation)
 - [Example](#example)
 - [Job specs](#job-specs)
+- [After a job](#after-a-job)
+- [Restarts](#restarts)
 - [Design](#design)
 
 ## Status
 
-Milestone 2 of four, partly run.
+Milestones 1 to 3 of four are implemented. Milestone 2 has run on
+clusters, in part; milestone 3 (queue rules, `status`, `fetch`, `usage`,
+`clean`, restart chains, `check-restart`, variants, MPI and placement) has
+run on the laptop only.
 
 - Run on clusters:
   - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
@@ -25,12 +30,16 @@ Milestone 2 of four, partly run.
   - `symmetry`: the same row on one H200, after a precompile job on an H200
     node.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
-- Tested on the laptop only, with stand-ins for `sbatch` and `squeue`: the
-  profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, and a precompile
-  lock that is held or stale.
-- Not yet: MPI, placement, checkpoints and restarts, the choice of a queue by
-  rule, `status`, `fetch`, `clean`. A spec that uses one of these is refused
-  with the milestone that brings it.
+- Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
+  `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
+  precompile lock that is held or stale, a chain of jobs, a pre-empted job
+  that submits its successor, and `check-restart`.
+- Run on the laptop by hand: two versions of a package in one job, with MPI
+  ranks under MPICH_jll's `mpiexec`.
+- Read only, never run: scripts with `srun` launchers, `numactl` placement,
+  several nodes, or a site's own MPI.
+- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
+  refused for; the memory part of the resource check; `--snapshot-pins`.
 
 ## Installation
 
@@ -121,6 +130,75 @@ directory. Per run: `threads` (a list makes one run per count), `julia_args`
 and `vars`. `submit --run <label>` submits only the named runs, for a site
 that cannot hold them all. `submit` refuses a job that asks for more cores than its
 allocation has, or more time or nodes than its queue allows.
+
+The queue is the first in the site's profile that fits the job; `--queue`
+names another. On Trillium that is `debug` for a job of up to an hour while
+no other job of yours is there, and `compute` otherwise.
+
+Further fields, each described in [`PLAN.md`](PLAN.md):
+
+| Field | Meaning |
+| --- | --- |
+| `env = "test+cuda"` | kinds joined by `+`: `cuda`, `metal`, `test` (the test dependencies), `mpi` |
+| `variant = "base"` | another version of the package, added by `snapshot --variant base=<directory>` |
+| `ranks = 8`, `mpi = "jll"` | MPI ranks, started by a recipe of the site's profile; `threads` is then per rank |
+| `nodes = 2` | in `resources`: the job's nodes; in a run: the nodes its ranks are spread over |
+| `placement = "numa"` | one NUMA domain per rank, with `numactl` |
+| `pin = true` | `JULIA_EXCLUSIVE=1` under `srun --cpu-bind=none`; not with `ranks` or `placement` |
+| `node = "cn095"` | a named node |
+| `sbatch_args`, `prefix` | lines for the batch header, and words before the Julia command, as written |
+| `[after] cmd` | a shell command after the last run |
+
+[`examples/treeamr-nested.toml`](examples/treeamr-nested.toml) uses most of
+them.
+
+## After a job
+
+```bash
+simlaunch status s1                 # one table of the study's runs on all its sites
+simlaunch fetch s1                  # results into <project>/.claude/data/s1/<site>/
+simlaunch usage s1                  # what each job holds on disk, as it recorded it
+simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
+```
+
+`fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
+`--with-checkpoints` and `--max-size` change that. `clean` refuses while a
+job of the study is queued or running, and never touches the snapshot on the
+laptop.
+
+## Restarts
+
+A run that checkpoints is a chain of jobs. Each job writes into a directory
+of its own and reads the checkpoints of an earlier one; what a job wrote is
+read-only once it has ended.
+
+```toml
+checkpoints = true
+
+[restart]
+to = "checkpoint"                   # the driver's argument for its own checkpoints: checkpoint=<job directory>/ck
+from = "restart_from"               # for an earlier job's: restart_from=<earlier job directory>/ck
+walltime = "walltime"               # for the seconds it may run
+continue_code = 3                   # its exit code when it stopped at the walltime
+compare = "test/compare_runs.jl"    # for check-restart
+```
+
+```bash
+simlaunch submit s2 jobs/long.toml --site trillium --chain 3   # three jobs, one after another
+simlaunch resubmit s2 jobs/long.toml --site trillium           # the next job, later
+simlaunch clean s2 --site trillium --old-checkpoints           # all but each run's newest
+simlaunch check-restart s2 jobs/short.toml --site trillium     # does the driver keep the contract?
+```
+
+The driver must write each checkpoint under a temporary name (`*.tmp`) and
+rename it when it is whole. On a pre-emptible queue (Symmetry's `h200preq`,
+which a GPU job with checkpoints gets) a stopped job submits its successor
+itself; to end such a chain, create the file `STOP` in the study's output
+directory and cancel the job. `check-restart` runs a spec once in one job
+and once stopped and continued, and passes when the stopped job's directory
+is unchanged and the project's `compare` script accepts the pieces. A driver
+that still appends to its old output runs with `mutable_restarts = true`
+([`examples/treegh-octant-chain.toml`](examples/treegh-octant-chain.toml)).
 
 ## Design
 

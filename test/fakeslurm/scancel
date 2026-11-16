@@ -1,0 +1,4 @@
+#!/bin/bash
+# A stand-in for scancel in the tests: SIGTERM to the job's script.
+kill -TERM "$(cat "$FAKESLURM/$1.pid")" 2>/dev/null
+exit 0

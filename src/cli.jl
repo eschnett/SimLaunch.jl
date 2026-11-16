@@ -4,13 +4,31 @@ const USAGE = """
     simlaunch: run Julia projects locally and on clusters
 
     Usage:
-      simlaunch snapshot <project> --study <study>
+      simlaunch snapshot <project> --study <study> [--variant <name>=<directory>]...
           Copy the project and the packages it takes by path, as the study <study>.
+          A variant is another version of the project, for comparisons in one job.
       simlaunch prepare <study> --site <site> [--spec <spec.toml>]...
           Copy the study to the site, instantiate and precompile it there.
-      simlaunch submit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--dry-run]
+      simlaunch submit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]...
+                       [--chain <n>] [--dry-run]
           Generate the batch script and submit it. --dry-run only prints it.
           --run submits only the named runs, for a site that cannot hold them all.
+          --chain queues <n> jobs of a spec with checkpoints, one after another.
+      simlaunch resubmit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]
+          Submit the next job of a run with checkpoints.
+      simlaunch status <study>... [--site <site>]
+          One table of the studies' runs on the sites they are prepared on.
+      simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
+                      [--max-size <size>] [--to <directory>]
+          Copy results to .claude/data/<study>/<site>/ in the study's project.
+      simlaunch usage <study> [--site <site>] [--measure]
+          What the study's runs hold on disk, as each job recorded it.
+      simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
+          List what would be deleted on the site, and delete it after confirmation.
+      simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
+          Run the spec's [combine] script over each run's job directories.
+      simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...
+          Test the spec's driver against the restart contract, with real jobs.
       simlaunch sites
           List the site profiles.
       simlaunch studies
@@ -64,9 +82,14 @@ function command(args)
     if cmd in ("help", "--help", "-h")
         print(USAGE)
     elseif cmd == "snapshot"
-        pos, opt = parse_args(rest, ["study"])
-        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study>")
-        dest = snapshot(pos[1]; study = need(opt, "study"))
+        pos, opt = parse_args(rest, ["study", "variant"]; multi = ["variant"])
+        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study> [--variant <name>=<directory>]...")
+        variants = map(get(opt, "variant", String[])) do v
+            occursin('=', v) || fail("--variant takes <name>=<directory>: $(repr(v))")
+            name, dir = split(v, '='; limit = 2)
+            String(name) => String(dir)
+        end
+        dest = snapshot(pos[1]; study = need(opt, "study"), variants)
         snap = load_snapshot(opt["study"])
         println("study $(opt["study"]): $(length(snap["package"])) packages in $dest")
         for p in snap["package"]
@@ -74,16 +97,48 @@ function command(args)
                     string(p["sha"][1:10], " ", p["branch"], p["dirty"] ? ", with uncommitted changes" : "")
             println("  $(rpad(p["name"], 28)) $state")
         end
+        for v in get(snap, "variant", [])
+            println("  variant $(v["name"]): ", join([p["name"] for p in v["package"]], ", "))
+        end
     elseif cmd == "prepare"
         pos, opt = parse_args(rest, ["site", "spec"]; multi = ["spec"])
         length(pos) == 1 || fail("usage: simlaunch prepare <study> --site <site> [--spec <spec.toml>]...")
         prepare(pos[1]; site = need(opt, "site"), specs = get(opt, "spec", String[]))
-    elseif cmd == "submit"
-        pos, opt = parse_args(rest, ["site", "queue", "run"], ["dry-run"]; multi = ["run"])
+    elseif cmd in ("submit", "resubmit")
+        pos, opt = parse_args(rest, ["site", "queue", "run", "chain"], cmd == "submit" ? ["dry-run"] : String[]; multi = ["run"])
         length(pos) == 2 ||
-            fail("usage: simlaunch submit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--dry-run]")
-        submit(pos[1], pos[2]; site = need(opt, "site"), queue = get(opt, "queue", nothing),
-               only_runs = get(opt, "run", String[]), dry_run = get(opt, "dry-run", false))
+            fail("usage: simlaunch $cmd <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]")
+        chain = tryparse(Int, get(opt, "chain", "1"))
+        chain === nothing && fail("--chain takes a number of jobs")
+        kw = (; site = need(opt, "site"), queue = get(opt, "queue", nothing), only_runs = get(opt, "run", String[]), chain)
+        cmd == "submit" ? submit(pos[1], pos[2]; kw..., dry_run = get(opt, "dry-run", false)) : resubmit(pos[1], pos[2]; kw...)
+    elseif cmd == "status"
+        pos, opt = parse_args(rest, ["site"])
+        isempty(pos) && fail("usage: simlaunch status <study>... [--site <site>]")
+        status(pos; site = get(opt, "site", nothing))
+    elseif cmd == "fetch"
+        pos, opt = parse_args(rest, ["site", "run", "max-size", "to"], ["with-checkpoints"]; multi = ["run"])
+        length(pos) == 1 || fail("usage: simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]")
+        fetch(pos[1]; site = get(opt, "site", nothing), runs = get(opt, "run", String[]),
+              with_checkpoints = get(opt, "with-checkpoints", false), max_size = get(opt, "max-size", "100M"),
+              to = get(opt, "to", nothing))
+    elseif cmd == "usage"
+        pos, opt = parse_args(rest, ["site"], ["measure"])
+        length(pos) == 1 || fail("usage: simlaunch usage <study> [--site <site>] [--measure]")
+        usage(pos[1]; site = get(opt, "site", nothing), measure = get(opt, "measure", false))
+    elseif cmd == "clean"
+        pos, opt = parse_args(rest, ["site", "run"], ["old-checkpoints", "yes"]; multi = ["run"])
+        length(pos) == 1 || fail("usage: simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]")
+        clean(pos[1]; site = need(opt, "site"), old_checkpoints = get(opt, "old-checkpoints", false),
+              runs = get(opt, "run", String[]), yes = get(opt, "yes", false))
+    elseif cmd == "combine"
+        pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
+        length(pos) == 2 || fail("usage: simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...")
+        combine(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]))
+    elseif cmd == "check-restart"
+        pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
+        length(pos) == 2 || fail("usage: simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...")
+        check_restart(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[])) || return 1
     elseif cmd == "sites"
         foreach(println, known_sites())
     elseif cmd == "studies"

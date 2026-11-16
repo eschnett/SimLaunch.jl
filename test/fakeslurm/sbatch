@@ -1,11 +1,27 @@
 #!/bin/bash
-# A stand-in for sbatch in the tests: starts the script at once, in the
-# background, with a job ID, and writes its output where --output says.
+# A stand-in for sbatch in the tests: starts the script in the background
+# with a job ID, at once or after the job named by --dependency=afterany:ID
+# has ended, and writes its output where --output says.
 script="${@: -1}"
+after=
+for arg in "$@"; do
+    case $arg in --dependency=afterany:*) after=${arg#--dependency=afterany:} ;; esac
+done
 mkdir -p "$FAKESLURM"
 n=$(( $(cat "$FAKESLURM/counter" 2>/dev/null || echo 1000) + 1 ))
 echo "$n" > "$FAKESLURM/counter"
 out=$(sed -n 's/^#SBATCH --output=//p' "$script" | sed "s/%j/$n/")
-SLURM_JOB_ID=$n SLURM_JOB_NAME=fake nohup bash "$script" > "${out:-/dev/null}" 2>&1 < /dev/null &
+name=$(sed -n 's/^#SBATCH --job-name=//p' "$script")
+partition=$(sed -n 's/^#SBATCH --partition=//p' "$script")
+echo "$name" > "$FAKESLURM/$n.name"
+echo "$partition" > "$FAKESLURM/$n.partition"
+(
+    if [ -n "$after" ]; then
+        while kill -0 "$(cat "$FAKESLURM/$after.pid" 2>/dev/null)" 2>/dev/null; do sleep 0.2; done
+    fi
+    touch "$FAKESLURM/$n.started"
+    # the job is this subshell's process: a signal to it reaches the script
+    SLURM_JOB_ID=$n SLURM_JOB_NAME=$name SLURM_JOB_PARTITION=$partition exec bash "$script"
+) > "${out:-/dev/null}" 2>&1 < /dev/null &
 echo $! > "$FAKESLURM/$n.pid"
 echo "$n"

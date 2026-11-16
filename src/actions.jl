@@ -6,7 +6,8 @@ prepared_file(site::Site, study) = joinpath(study_depot(site, study), "prepared"
 
 "A combination's line in the study's `prepared` file on a site."
 function combo_line(c::Combo)
-    fields = [c.env == "default" ? c.project : c.envdir, c.args, c.gpu ? "gpu" : ""]
+    own = isempty(env_kinds(c.env)) && c.variant == "default"       # the project itself, as the snapshot holds it
+    fields = [own ? c.project : c.envdir, c.args, c.gpu ? "gpu" : ""]
     while length(fields) > 1 && isempty(fields[end])
         pop!(fields)
     end
@@ -18,9 +19,9 @@ function combo_text(c::Combo)
 end
 
 "The jobs the given spec files mean on a site."
-function load_jobs(study, site::Site, specs; queue = nothing, only_runs = String[])
+function load_jobs(study, site::Site, specs; kw...)
     snap = load_snapshot(study)
-    return [resolve(load_spec(file), site; study, project = snap["project"], queue, only_runs, file)
+    return [resolve(load_spec(file), site; study, project = snap["project"], variants = study_variants(snap), file, kw...)
             for file in specs]
 end
 
@@ -56,20 +57,21 @@ function prepare_preamble(io::IO, site::Site, study)
 end
 
 "Bash text that precompiles one combination, checks it and records it."
-function precompile_block(io::IO, c::Combo; instantiate::Bool)
+function precompile_block(io::IO, site::Site, c::Combo; instantiate::Bool)
     flags = isempty(c.args) ? "" : c.args * " "
-    julia = "\"\$JULIA\" $(flags)--startup-file=no --project=\"\$CODE\"/$(q(c.envdir))"
-    print(io, """
-
-          echo "=== precompile $(combo_text(c)) ==="
-          $julia -e 'using Pkg; $(instantiate ? "Pkg.instantiate(); " : "")Pkg.precompile()'
-          """)
+    julia = "$(julia_text(site, c.mpi)) $(flags)--startup-file=no --project=\"\$CODE\"/$(q(c.envdir))"
+    println(io)
+    println(io, "echo \"=== precompile $(combo_text(c)) ===\"")
+    println(io, "(")                                   # a recipe's modules and variables stay in here
+    recipe_setup(io, site, c.mpi)
+    println(io, "$julia -e 'using Pkg; $(instantiate ? "Pkg.instantiate(); " : "")Pkg.precompile()'")
     # what a package downloads at first use is fetched now, where there is a network
-    c.env == "default" || println(io, "$julia -e $(q(ENV_KINDS[c.env].warm))")
-    print(io, """
-          $julia "\$CODE"/tools/check_precompiled.jl
-          grep -qxF $(q(combo_line(c))) "\$DEPOT/prepared" 2>/dev/null || echo $(q(combo_line(c))) >> "\$DEPOT/prepared"
-          """)
+    for kind in env_kinds(c.env)
+        isempty(ENV_KINDS[kind].warm) || println(io, "$julia -e $(q(ENV_KINDS[kind].warm))")
+    end
+    println(io, "$julia \"\$CODE\"/tools/check_precompiled.jl")
+    println(io, ")")
+    println(io, "grep -qxF $(q(combo_line(c))) \"\$DEPOT/prepared\" 2>/dev/null || echo $(q(combo_line(c))) >> \"\$DEPOT/prepared\"")
     return
 end
 
@@ -98,22 +100,30 @@ function prepare_script(site::Site, study, needed)
                                   "\$JULIA" --startup-file=no -e 'using Pkg; Pkg.Registry.update()'
                                   """)
     for c in unique(c -> c.envdir, needed)
-        if c.env == "default"
-            print(io, """
-
-                  echo "=== instantiate $(c.envdir) ==="
-                  "\$JULIA" --startup-file=no --project="\$CODE"/$(q(c.envdir)) -e 'using Pkg; Pkg.instantiate()'
-                  """)
-        else
-            print(io, """
-
-                  echo "=== environment $(c.envdir): $(c.project) and $(join(ENV_KINDS[c.env].packages, ", ")) ==="
-                  "\$JULIA" --startup-file=no "\$CODE"/tools/make_env.jl "\$CODE"/$(q(joinpath("src", c.project))) "\$CODE"/$(q(c.envdir)) $(join(q.(ENV_KINDS[c.env].packages), " "))
-                  """)
+        julia = julia_text(site, c.mpi)
+        kinds = env_kinds(c.env)
+        println(io)
+        if isempty(kinds)
+            println(io, "echo \"=== instantiate $(c.envdir) ===\"")
+            println(io, "$julia --startup-file=no --project=\"\$CODE\"/$(q(c.envdir)) -e 'using Pkg; Pkg.instantiate()'")
+            continue
         end
+        packages = unique!(reduce(vcat, [ENV_KINDS[k].packages for k in kinds]))
+        "test" in kinds && pushfirst!(packages, "--test")
+        println(io, "echo \"=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(kinds, ", ")) ===\"")
+        println(io, "(")
+        recipe_setup(io, site, c.mpi)
+        println(io, "$julia --startup-file=no \"\$CODE\"/tools/make_env.jl \"\$CODE\"/$(q(variant_project(c.project, c.variant))) ",
+                "\"\$CODE\"/$(q(c.envdir)) $(join(q.(packages), " "))")
+        if !isempty(c.mpi)
+            rec = site.mpi[c.mpi]
+            prefs = isempty(rec.preferences) ? "" : " " * q(sprint(io -> TOML.print(io, rec.preferences; sorted = true)))
+            println(io, "$julia --startup-file=no --project=\"\$CODE\"/$(q(c.envdir)) \"\$CODE\"/tools/set_mpi.jl $(rec.binary)$prefs")
+        end
+        println(io, ")")
     end
     for c in needed
-        precompile_where(site, c.gpu) == "login" && precompile_block(io, c; instantiate = false)
+        precompile_where(site, c.gpu) == "login" && precompile_block(io, site, c; instantiate = false)
     end
     println(io)
     println(io, "echo \"=== done on the login node, \$(date) ===\"")
@@ -131,8 +141,11 @@ function precompile_script(site::Site, study, group)
     gpu = first(group).gpu
     io = IOBuffer()
     println(io, "#!/bin/bash")
-    sbatch_header(io, site; queue = site.partition ? (gpu ? site.gpu.default_queue : site.default_queue) : nothing,
-                  gpus = gpu ? 1 : 0, time = site.precompile_time, name = "$study-precompile",
+    queue = site.partition ?
+            choose_queue(site, gpu ? site.gpu.queues : site.queues; what = "the precompile job asks for $(time_string(site.precompile_time))",
+                         seconds = site.precompile_time, nodes = 1, gpus = gpu ? 1 : 0, checkpoints = false, chain = 1).partition :
+            nothing
+    sbatch_header(io, site; queue, gpus = gpu ? 1 : 0, time = site.precompile_time, name = "$study-precompile",
                   output = precompile_log(site, study, "%j"))
     print(io, """
 
@@ -154,7 +167,7 @@ function precompile_script(site::Site, study, group)
           lscpu 2>/dev/null | grep -m1 'Model name' || true
           """)
     for c in group
-        precompile_block(io, c; instantiate = site.compute_internet)
+        precompile_block(io, site, c; instantiate = site.compute_internet)
     end
     println(io)
     println(io, "echo \"=== precompiled, \$(date) ===\"")
@@ -318,7 +331,7 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     end
     if isempty(specs)
         project = snap["project"]
-        push!(needed, Combo(project, "default", env_dir(project, "default", project), "", s.cores == 0))
+        push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", s.cores == 0, ""))
     end
     unique!(needed)
     check_connection(s)
@@ -331,7 +344,7 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     mktempdir() do dir
         write(joinpath(dir, name), script)
         push_file(s, joinpath(dir, name), joinpath(code, "jobs", name))
-        for tool in ("check_precompiled.jl", "make_env.jl")       # also for a study snapshotted before the tool had them
+        for tool in TOOLS                                         # also for a study snapshotted before the tool had them
             push_file(s, joinpath(PKGROOT, "templates", tool), joinpath(code, "tools", tool))
         end
     end
@@ -352,66 +365,148 @@ end
 function describe(io::IO, job::Job)
     println(io, "study $(job.study), spec $(job.name), site $(job.site.name)")
     job.queue === nothing || println(io, "queue: $(job.queue.partition)")
+    job.nodes > 1 && println(io, "nodes: $(job.nodes)")
     job.gpus > 0 && println(io, "GPUs: $(job.gpus), with $(job.cores) cores")
-    job.env == "default" || println(io, "environment: $(job.envdir)")
     println(io, "time: ", job.time === nothing ? "no limit" : time_string(job.time))
+    job.checkpoints && println(io, "checkpoints: ", job.mutable ? "one shared directory (mutable_restarts)" :
+                                                    "a chain of jobs, one directory each")
     println(io, "runs ($(job.mode)):")
     for r in job.runs
-        println(io, "  $(rpad(r.label, 16)) $(lpad(r.threads, 4)) threads   ", join(r.cmd, " "))
+        shape = r.ranks > 0 ? "$(lpad(r.ranks, 3)) ranks × $(lpad(r.threads, 3)) threads" : "$(lpad(r.threads, 4)) threads"
+        notes = [r.envdir == joinpath("src", job.project) ? "" : r.envdir, r.placement]
+        println(io, "  $(rpad(r.label, 16)) $shape   ", join(r.cmd, " "),
+                all(isempty, notes) ? "" : "   [" * join(filter(!isempty, notes), ", ") * "]")
+    end
+    return
+end
+
+"The user's jobs in the site's queue: pairs of job ID and job name."
+function queued_jobs(site::Site)
+    site.slurm || return Pair{String,String}[]
+    out = readsite(site, "squeue -h -u \"\$(id -un)\" -o '%i %j' 2>/dev/null || true")
+    return [String(a) => String(b) for (a, b) in (split(l; limit = 2) for l in split(out, '\n'; keepempty = false))]
+end
+
+"The partitions among `queues` that take one job at a time and hold one of the user's already."
+function busy_queues(site::Site, queues)
+    names = [qu.partition for qu in queues if qu.one_at_a_time]
+    isempty(names) && return Set{String}()
+    out = readsite(site, "for p in $(join(q.(names), " ")); do " *
+                         "if [ -n \"\$(squeue -h -u \"\$(id -un)\" -p \"\$p\" -o %i 2>/dev/null | head -n 1)\" ]; then echo \"\$p\"; fi; done")
+    return Set{String}(split(out, '\n'; keepempty = false))
+end
+
+"The jobs of a spec that are queued or running on the site."
+function active_jobs(site::Site, study, name)
+    if site.slurm
+        return [id for (id, jobname) in queued_jobs(site) if jobname == "$study-$name"]
+    end
+    logs = joinpath(study_scratch(site, study), "logs")
+    out = readsite(site, "for f in $(q(logs))/$(q(name))-*.pid; do [ -f \"\$f\" ] || continue; " *
+                         "if kill -0 \"\$(cat \"\$f\")\" 2>/dev/null; then b=\${f##*/$(name)-}; echo \"\${b%.pid}\"; fi; done; true")
+    return collect(String, split(out, '\n'; keepempty = false))
+end
+
+"Stop a job: `scancel`, or a signal to the local job's script."
+function cancel_job(site::Site, study, name, jobid)
+    if site.slurm
+        runsite(site, "scancel $(q(jobid))")
+    else
+        pidfile = joinpath(study_scratch(site, study), "logs", "$name-$jobid.pid")
+        runsite(site, "kill -TERM \"\$(cat $(q(pidfile)))\" 2>/dev/null || true")
+    end
+    return
+end
+
+"Wait until the given job of a spec has ended."
+function wait_ended(site::Site, study, name, jobid; poll = 20, timeout = Inf)
+    t0 = time()
+    while jobid in active_jobs(site, study, name)
+        time() - t0 > timeout && fail("job $jobid on $(site.name) did not end within $(round(Int, timeout)) s")
+        sleep(poll)
     end
     return
 end
 
 """
-    submit(study, spec; site, queue = nothing, only_runs = [], dry_run = false)
+    submit(study, spec; site, queue = nothing, only_runs = [], dry_run = false, chain = 1)
 
 Generate the job's batch script and submit it. With `dry_run` it is only
-printed. `only_runs` submits just the runs with these labels. Returns the job ID, or `nothing` for a dry run.
+printed. `only_runs` submits just the runs with these labels. `chain`
+submits that many jobs of a spec with checkpoints, each after the one before
+has ended. Returns the job ID (the first of a chain), or `nothing` for a dry
+run.
 """
 function submit(study::AbstractString, spec::AbstractString; site::AbstractString, queue = nothing,
-                only_runs = String[], dry_run::Bool = false, io::IO = stdout)
+                only_runs = String[], dry_run::Bool = false, chain::Integer = 1, io::IO = stdout)
     s = load_site(site)
-    job = only(load_jobs(study, s, [spec]; queue, only_runs))
-    script = generate(job)
     if dry_run
+        job = only(load_jobs(study, s, [spec]; queue, only_runs, chain))
         describe(io, job)
+        job.queue !== nothing && job.queue.one_at_a_time &&
+            println(io, "(queue $(job.queue.partition) takes one job at a time; `submit` checks that it is free and else takes the next queue)")
         println(io, "--- the batch script ---")
-        print(io, script)
+        print(io, generate(job))
         return nothing
     end
 
     check_connection(s)
+    busy = s.slurm && s.partition ? busy_queues(s, [s.queues; s.gpu === nothing ? Queue[] : s.gpu.queues]) : Set{String}()
+    job = only(load_jobs(study, s, [spec]; queue, only_runs, chain, busy))
+    return submit_job(job, spec; chain, io)
+end
+
+"Submit a resolved job. `spec` is the file it came from, kept beside the script."
+function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, io::IO = stdout)
+    s, study = job.site, job.study
     have = prepared(s, study)
     for combo in combos(job)
         combo_line(combo) in have && continue
         fail("study $study is not prepared on $(s.name) for $(combo_text(combo))",
              "; run `simlaunch prepare $study --site $(s.name) --spec $spec`")
     end
+    if job.checkpoints
+        active = active_jobs(s, study, job.name)
+        isempty(active) ||
+            fail("job $(join(active, ", ")) of spec $(job.name) is queued or running on $(s.name). A run with checkpoints ",
+                 "has one job at a time: wait for it, or cancel it. (`--chain N` queues N jobs at once.)")
+        job.mutable &&
+            @warn "$(job.name): mutable_restarts = true. Its jobs share one directory and append to earlier output; nothing is made read-only."
+    end
 
     code, scratch = study_code(s, study), study_scratch(s, study)
     base = "$(job.name)-$(stamp())"
     remote = joinpath(code, "jobs", base * ".sh")
     mktempdir() do dir
-        write(joinpath(dir, base * ".sh"), script)
+        write(joinpath(dir, base * ".sh"), generate(job; script = remote, successor))
         push_file(s, joinpath(dir, base * ".sh"), remote)
         push_file(s, spec, joinpath(code, "jobs", base * ".toml"))
     end
     runsite(s, "mkdir -p " * q(joinpath(scratch, "logs")))
+    ids = String[]
     if s.slurm
         export_flag = s.export_env ? "" : "--export=NONE "
-        out = readsite(s, "sbatch --parsable $export_flag" * q(remote))
-        jobid = String(first(split(strip(out), ';')))
-        occursin(r"^\d+$", jobid) || fail("sbatch did not return a job ID: $(repr(out))")
-        runsite(s, "bash " * q(remote) * " --queued " * q(jobid))
+        for k in 1:chain
+            after = k == 1 ? "" : "--dependency=afterany:$(ids[end]) "
+            out = readsite(s, "sbatch --parsable $export_flag$after" * q(remote))
+            id = String(first(split(strip(out), ';')))
+            occursin(r"^\d+$", id) || fail("sbatch did not return a job ID: $(repr(out))")
+            push!(ids, id)
+        end
+        runsite(s, "bash " * q(remote) * " --queued " * q(ids[1]) * " " * q(join(ids[2:end], ", ")))
     else
-        jobid = "L" * stamp()
-        runsite(s, "bash " * q(remote) * " --queued " * q(jobid))
-        log = log_file(job, jobid)
-        runsite(s, "SIMLAUNCH_JOB_ID=$(q(jobid)) nohup bash $(q(remote)) > $(q(log)) 2>&1 < /dev/null &")
+        push!(ids, "L" * stamp())
+        runsite(s, "bash " * q(remote) * " --queued " * q(ids[1]))
+        log = log_file(job, ids[1])
+        # returns once the job has written its process ID, by which it is known to be running
+        pidfile = joinpath(scratch, "logs", "$(job.name)-$(ids[1]).pid")
+        runsite(s, "SIMLAUNCH_JOB_ID=$(q(ids[1])) nohup bash $(q(remote)) > $(q(log)) 2>&1 < /dev/null & " *
+                   "for k in \$(seq 100); do [ -f $(q(pidfile)) ] && break; sleep 0.1; done")
     end
     describe(io, job)
-    println(io, "submitted as job $jobid; script $remote")
-    println(io, "log: ", log_file(job, jobid))
+    println(io, length(ids) == 1 ? "submitted as job $(ids[1])" : "submitted as a chain of jobs $(join(ids, ", "))",
+            "; script $remote")
+    println(io, "log: ", log_file(job, ids[1]))
     println(io, "watch with: simwatch ", islocal(s) ? scratch : "$(s.host):$scratch")
-    return jobid
+    return ids[1]
 end

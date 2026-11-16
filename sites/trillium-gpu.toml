@@ -23,9 +23,8 @@ request = "--gpus-per-node=%d"
 cores = 24                             # per GPU, with 192000 M; given, not asked for
 request_cores = false
 max = 4
-default_queue = "compute"
-queues = [
-  { partition = "debug",   max_time = "2:00:00" },   # one job at a time
+queues = [                             # in the order of preference
+  { partition = "debug",   max_time = "2:00:00", one_at_a_time = true },
   { partition = "compute", max_time = "24:00:00" },
 ]
 

@@ -18,8 +18,8 @@ set -u
 STUDY=toy
 SPEC=gpu
 SITE=symmetry
+CODE=/home/eschnetter/claude/studies/toy
 PROJECT=/home/eschnetter/claude/studies/toy/src/Toy
-ENVDIR=/home/eschnetter/claude/studies/toy/envs/default-cuda      # the runs' environment
 TOOLS=/home/eschnetter/claude/studies/toy/tools
 DEPOT=/home/eschnetter/claude/studies/toy/depot      # the study's compiled caches
 SCRATCH=/mnt/beegfs/eschnetter/claude/studies/toy
@@ -27,13 +27,20 @@ JULIA="$HOME"/.juliaup/bin/julia
 USE_SLURM=1
 TIME_LIMIT=1800        # seconds; empty: none
 NODES=1
+GPUS=1
 LABELS=(n3)
 THREADS=(8)
+RANKS=(0)
 JOBDIRS=()
+SKIP=()
 PIDS=()
 TERMINATED=
+CHECKPOINTS=0        # 1: the runs continue from the checkpoints of earlier jobs
+MUTABLE=0            # 1: one shared directory for all jobs of a run
+CONTINUE_CODE=        # the driver's exit code when it stops at its walltime
+SUCCESSOR=0
 
-# --- SimLaunch helpers: directories and SimWatch status files ---------------
+# --- SimLaunch helpers: directories, restarts and SimWatch status files ------
 
 run_dir() {   # RUN-INDEX: the run's directory, which holds one directory per job
     echo "$SCRATCH/$SPEC-${LABELS[$1]}"
@@ -43,9 +50,14 @@ sw_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
 
-# sw_write RUN-INDEX STATUS MESSAGE: rewrite the run's simwatch.toml.
+# usage_kb RUN-INDEX: what the run's ended jobs hold, in KiB, as far as it was measured.
+usage_kb() {
+    awk '/^kb = [0-9]+$/ { s += $3 } END { print s + 0 }' "$(run_dir "$1")/diskusage.toml" 2>/dev/null || echo 0
+}
+
+# sw_write RUN-INDEX STATUS MESSAGE [NEXT-JOB]: rewrite the run's simwatch.toml.
 sw_write() {
-    local i=$1 status=$2 message=$3 dir f tmp
+    local i=$1 status=$2 message=$3 next=${4:-} dir f tmp prev
     dir=$(run_dir "$i")
     f=$dir/simwatch.toml
     tmp=$f.tmp.$$.$RANDOM
@@ -67,22 +79,32 @@ sw_write() {
         echo
         echo "[resources]"
         echo "nodes = $NODES"
+        if [ "${RANKS[$i]}" -gt 0 ]; then echo "tasks = ${RANKS[$i]}"; fi
         echo "threads = ${THREADS[$i]}"
+        if [ "$GPUS" -gt 0 ]; then echo "gpus = $GPUS"; fi
+        if [ -f "$dir/diskusage.toml" ]; then
+            echo
+            echo "[diskusage]                  # of the jobs that have ended"
+            echo "kb = $(usage_kb "$i")"
+        fi
         if [ -n "${SLURM_JOB_ID:-}" ]; then
             echo
             echo "[slurm]"
             echo "job_id = \"$SLURM_JOB_ID\""
             echo "job_name = \"${SLURM_JOB_NAME:-}\""
             echo "partition = \"${SLURM_JOB_PARTITION:-}\""
+            prev=$(grep -vxF "$JOBID" "$dir/.simlaunch-jobs" 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)
+            if [ -n "$prev" ]; then echo "previous_job_ids = [$prev]"; fi
+            if [ -n "$next" ]; then echo "next_job_id = \"$next\""; fi
         fi
     } > "$tmp" && mv -f "$tmp" "$f"
     return 0
 }
 
-# sw_queued RUN-INDEX: a submitted job, before it starts. Does nothing if the
-# job has started already.
+# sw_queued RUN-INDEX [LATER-JOBS]: a submitted job, before it starts. Does
+# nothing if the job has started already.
 sw_queued() {
-    local i=$1 dir f tmp id=
+    local i=$1 later=${2:-} dir f tmp id= prev
     dir=$(run_dir "$i")
     f=$dir/simwatch.toml
     tmp=$f.tmp.$$.$RANDOM
@@ -95,49 +117,141 @@ sw_queued() {
         echo "code = \"SimLaunch\""
         echo "group = \"$STUDY\""
         echo "updated = $(sw_now)"
-        echo "message = \"queued as job $JOBID\""
+        echo "message = \"queued as job $JOBID${later:+, then $later}\""
         if [ "$USE_SLURM" = 1 ]; then
             echo
             echo "[slurm]"
             echo "job_id = \"$JOBID\""
+            prev=$(sed 's/.*/"&"/' "$dir/.simlaunch-jobs" 2>/dev/null | paste -sd, -)
+            if [ -n "$prev" ]; then echo "previous_job_ids = [$prev]"; fi
         fi
     } > "$tmp" && mv -f "$tmp" "$f"
+}
+
+# job_dirs RUN-INDEX: the run's job directories, oldest first.
+job_dirs() {
+    find "$(run_dir "$1")" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' 2>/dev/null | sort
 }
 
 # new_job_dir RUN-INDEX: this job's own directory in the run, numbered in order.
 new_job_dir() {
     local dir n
     dir=$(run_dir "$1")
+    if [ "$MUTABLE" = 1 ]; then echo "$dir/mutable"; return; fi
     # the run's directory may not exist yet: a job can start before it is marked queued
-    n=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' 2>/dev/null | wc -l)
+    n=$(job_dirs "$1" | wc -l)
     printf '%s/%03d-%s\n' "$dir" $((n + 1)) "$JOBID"
+}
+
+# run_finished RUN-INDEX: true if an earlier job has finished the run.
+run_finished() {
+    local id= state= rc=
+    if [ -f "$(run_dir "$1")/.simlaunch-job" ]; then read -r id state rc _ < "$(run_dir "$1")/.simlaunch-job"; fi
+    [ "$state" = done ] && [ "$rc" = 0 ]
+}
+
+# du_kb DIR: its size in KiB, or "unknown" if it cannot be measured within 60 s.
+du_kb() {
+    local limit= out
+    if command -v timeout > /dev/null 2>&1; then limit="timeout 60"; fi
+    out=$($limit du -sk "$1" 2>/dev/null | cut -f1)
+    echo "${out:-\"unknown\"}"
+}
+
+# record_usage RUN-INDEX JOBDIR: add the size of a job's directory, and of its
+# checkpoints, to the run's diskusage.toml. Once per job.
+record_usage() {
+    local f name ck=0
+    f=$(run_dir "$1")/diskusage.toml
+    name=$(basename "$2")
+    [ -d "$2" ] || return 0
+    if grep -qxF "dir = \"$name\"" "$f" 2>/dev/null; then return 0; fi
+    if [ -d "$2/ck" ]; then ck=$(du_kb "$2/ck"); fi
+    printf '[[job]]\ndir = "%s"\nkb = %s\ncheckpoints_kb = %s\n\n' "$name" "$(du_kb "$2")" "$ck" >> "$f"
+}
+
+# seal_earlier RUN-INDEX: what the run's earlier jobs wrote is read-only and
+# measured, also where a job was killed before it could do that itself.
+seal_earlier() {
+    local d
+    while IFS= read -r d; do
+        if [ "$d" = "${JOBDIRS[$1]}" ]; then continue; fi
+        chmod -R a-w "$d" 2>/dev/null
+        record_usage "$1" "$d"
+    done < <(job_dirs "$1")
+}
+
+# restart_source RUN-INDEX: the ck/ of the newest earlier job that holds a
+# complete checkpoint, or nothing. A checkpoint under a temporary name is one
+# that was still being written.
+restart_source() {
+    local d found= pat complete=()
+    for pat in ${TEMPORARY[@]+"${TEMPORARY[@]}"}; do complete+=(! -name "$pat"); done
+    while IFS= read -r d; do
+        if [ "$d" = "${JOBDIRS[$1]}" ] || [ ! -d "$d/ck" ]; then continue; fi
+        if [ -n "$(find "$d/ck" -mindepth 1 -maxdepth 1 ${complete[@]+"${complete[@]}"} 2>/dev/null | head -n 1)" ]; then
+            found=$d/ck
+        fi
+    done < <(job_dirs "$1")
+    echo "$found"
 }
 
 # run_one RUN-INDEX: run it in its job directory, keep its SimWatch file
 # current, and make the directory read-only when it has ended. Call in a
 # subshell; exits with the run's exit code.
 run_one() {
-    local i=$1 dir jobdir=${JOBDIRS[$1]} pid heartbeat rc
+    local i=$1 dir jobdir=${JOBDIRS[$1]} pid heartbeat rc src next= told=
     dir=$(run_dir "$i")
     cd "$jobdir" || exit 1
+    grep -qxF "$JOBID" "$dir/.simlaunch-jobs" 2>/dev/null || echo "$JOBID" >> "$dir/.simlaunch-jobs"
     echo "$JOBID running" > "$dir/.simlaunch-job"
+    RESTART_ARGS=()
+    if [ "$CHECKPOINTS" = 1 ]; then
+        mkdir -p "$jobdir/ck"
+        RESTART_ARGS+=("$RESTART_TO=$jobdir/ck")
+        if [ "$MUTABLE" = 0 ]; then
+            src=$(restart_source "$i")
+            if [ -n "$src" ]; then
+                RESTART_ARGS+=("$RESTART_FROM=$src")
+                echo "run ${LABELS[$i]}: continues from $src"
+            else
+                echo "run ${LABELS[$i]}: no earlier checkpoint, starts at the beginning"
+            fi
+        fi
+        if [ -n "$RESTART_WALLTIME" ] && [ -n "$TIME_LIMIT" ]; then
+            RESTART_ARGS+=("$RESTART_WALLTIME=$(( TIME_LIMIT - MARGIN - ($(date +%s) - SW_T0) ))")
+        fi
+    fi
     sw_write "$i" running "running in $(basename "$jobdir")"
     ( while sleep 60; do sw_write "$i" running "running in $(basename "$jobdir")"; done ) &
     heartbeat=$!
     "run_$i" > "$jobdir/output.log" 2>&1 &
     pid=$!
-    trap 'kill -TERM "$pid" 2>/dev/null' TERM INT
+    trap 'told=1; kill -TERM "$pid" 2>/dev/null' TERM INT
     wait "$pid"; rc=$?
     while kill -0 "$pid" 2>/dev/null; do wait "$pid"; rc=$?; done
     kill "$heartbeat" 2>/dev/null
     wait "$heartbeat" 2>/dev/null
+    if [ "$MUTABLE" = 0 ]; then
+        chmod -R a-w "$jobdir"
+        record_usage "$i" "$jobdir"
+    fi
     if [ "$rc" -eq 0 ]; then
+        echo "$JOBID done 0" > "$dir/.simlaunch-job"
         sw_write "$i" finished "finished in $(basename "$jobdir")"
+    elif [ "$CHECKPOINTS" = 1 ] && [ -n "$CONTINUE_CODE" ] && [ "$rc" -eq "$CONTINUE_CODE" ]; then
+        # the driver stopped at its walltime: not a failure
+        echo "$JOBID stopped $rc" > "$dir/.simlaunch-job"
+        sw_write "$i" stopped "stopped at its walltime in $(basename "$jobdir"); the next job continues it"
+        rc=0
+    elif [ "$CHECKPOINTS" = 1 ] && [ -n "$told" ]; then
+        next=$(cat "$SCRATCH/logs/$SPEC-$JOBID.next" 2>/dev/null)
+        echo "$JOBID stopped $rc" > "$dir/.simlaunch-job"
+        sw_write "$i" stopped "stopped by a signal in $(basename "$jobdir"); ${next:+job $next continues it}${next:-a later job continues it}" "$next"
     else
+        echo "$JOBID done $rc" > "$dir/.simlaunch-job"
         sw_write "$i" failed "exit code $rc in $(basename "$jobdir") on $(hostname -s)"
     fi
-    echo "$JOBID done $rc" > "$dir/.simlaunch-job"
-    chmod -R a-w "$jobdir"
     exit "$rc"
 }
 
@@ -152,27 +266,54 @@ wait_runs() {
     return $bad
 }
 
-# The job was told to stop (time limit, scancel): pass it on to the runs.
+# submit_successor: a job stopped on a pre-emptible queue continues in a new
+# job, which cannot start before this one has ended. Not at the time limit,
+# where a chain or `simlaunch resubmit` continues, and not while the file
+# $SCRATCH/STOP exists.
+submit_successor() {
+    local pending next
+    if [ "$SUCCESSOR" != 1 ]; then return 0; fi
+    if [ -e "$SCRATCH/STOP" ]; then echo "job $JOBID: $SCRATCH/STOP exists, no successor"; return 0; fi
+    if [ -n "$TIME_LIMIT" ] && [ $(( $(date +%s) - SW_T0 )) -ge $(( TIME_LIMIT - 60 )) ]; then return 0; fi
+    pending=$(squeue -h -u "$(id -un)" -n "${SLURM_JOB_NAME:-}" -t PENDING -o %i 2>/dev/null | head -n 1)
+    if [ -n "$pending" ]; then echo "job $JOBID: job $pending is queued already and continues"; return 0; fi
+    next=$(sbatch --parsable $SBATCH_EXPORT --dependency=afterany:"$JOBID" "$SCRIPT" 2>&1)
+    next=${next%%;*}
+    case $next in
+        ''|*[!0-9]*) echo "job $JOBID: could not submit a successor: $next" ;;
+        *) echo "$next" > "$SCRATCH/logs/$SPEC-$JOBID.next"
+           echo "job $JOBID: stopped before its time limit; job $next continues it" ;;
+    esac
+}
+
+# The job was told to stop (time limit, pre-emption, scancel): pass it on to
+# the runs.
 on_term() {
     TERMINATED=1
-    echo "job $JOBID: terminated, stopping the runs"
+    echo "job $JOBID: told to stop at $(date)"
+    submit_successor
     kill -TERM ${PIDS[@]+"${PIDS[@]}"} 2>/dev/null
 }
 
-# When the job ends, however it ends: mark the runs that did not finish, make
-# every job directory read-only, and echo the runs' output into the job's log.
+# When the job ends, however it ends: mark the runs that did not end by
+# themselves, make every job directory read-only, and echo the runs' output
+# into the job's log.
 finish() {
     local rc=$? i dir id state
     for i in "${!LABELS[@]}"; do
+        if [ "${SKIP[$i]:-0}" = 1 ]; then continue; fi
         dir=$(run_dir "$i")
         id= state=
         if [ -f "$dir/.simlaunch-job" ]; then read -r id state _ < "$dir/.simlaunch-job"; fi
-        if [ "$id" != "$JOBID" ] || [ "$state" != done ]; then
+        if [ "$id" != "$JOBID" ] || [ "$state" = running ]; then
+            if [ "$MUTABLE" = 0 ] && [ -d "${JOBDIRS[$i]:-}" ]; then
+                chmod -R a-w "${JOBDIRS[$i]}"
+                record_usage "$i" "${JOBDIRS[$i]}"
+            fi
             sw_write "$i" failed "job $JOBID ended before this run finished (exit code $rc)"
             echo "$JOBID done $rc" > "$dir/.simlaunch-job"
         fi
         if [ -d "${JOBDIRS[$i]:-}" ]; then
-            chmod -R a-w "${JOBDIRS[$i]}"
             echo
             echo "=== output of ${LABELS[$i]} (${JOBDIRS[$i]}/output.log) ==="
             cat "${JOBDIRS[$i]}/output.log" 2>/dev/null
@@ -187,7 +328,7 @@ finish() {
 # Called by `simlaunch submit` after the job is queued.
 if [ "${1:-}" = --queued ]; then
     JOBID=$2
-    for i in "${!LABELS[@]}"; do sw_queued "$i"; done
+    for i in "${!LABELS[@]}"; do sw_queued "$i" "${3:-}"; done
     exit 0
 fi
 
@@ -217,22 +358,24 @@ trap on_term TERM INT
 
 # Every run gets a new directory of its own for this job.
 for i in "${!LABELS[@]}"; do
+    if [ "${SKIP[$i]:-0}" = 1 ]; then continue; fi
     JOBDIRS[$i]=$(new_job_dir "$i")
     mkdir -p "${JOBDIRS[$i]}" || exit 1
 done
 
 # The environment must be precompiled for this Julia and these flags:
 # a job compiles nothing.
-"$JULIA" --startup-file=no --project="$ENVDIR" "$TOOLS"/check_precompiled.jl || exit 3
+"$JULIA" --startup-file=no --project="$CODE"/envs/default-cuda "$TOOLS"/check_precompiled.jl || exit 3
 
 # The runs. Each starts in its own job directory, with its output in output.log.
 run_0() {   # n3
-    exec "$JULIA" -t 8 --project="$ENVDIR" "$PROJECT"/examples/hello.jl n=3
+    exec "$JULIA" -t 8 --project="$CODE"/envs/default-cuda "$PROJECT"/examples/hello.jl n=3
 }
 
 # One run after another.
 rc=0
 for i in "${!LABELS[@]}"; do
+    if [ "${SKIP[$i]:-0}" = 1 ]; then continue; fi
     if [ -n "$TERMINATED" ]; then rc=143; break; fi
     ( run_one "$i" ) &
     PIDS=($!)

@@ -1,8 +1,29 @@
 #!/bin/bash
-# A stand-in for squeue in the tests: `squeue -h -j ID -o %T`.
+# A stand-in for squeue in the tests: the jobs of test/fakeslurm/sbatch that
+# have not ended, filtered by -j, -n, -p and -t PENDING, printed as -o says
+# (%i, %j and %T).
+id= name= partition= state= format='%i'
 while [ $# -gt 0 ]; do
-    if [ "$1" = -j ]; then id=$2; fi
+    case $1 in
+        -j) id=$2; shift ;;
+        -n) name=$2; shift ;;
+        -p) partition=$2; shift ;;
+        -t) state=$2; shift ;;
+        -o) format=$2; shift ;;
+        -u) shift ;;
+    esac
     shift
 done
-pid=$(cat "$FAKESLURM/$id.pid" 2>/dev/null) || exit 0
-if kill -0 "$pid" 2>/dev/null; then echo RUNNING; fi
+for f in "$FAKESLURM"/*.pid; do
+    [ -f "$f" ] || continue
+    n=$(basename "$f" .pid)
+    kill -0 "$(cat "$f")" 2>/dev/null || continue
+    if [ -n "$id" ] && [ "$n" != "$id" ]; then continue; fi
+    if [ -n "$name" ] && [ "$(cat "$FAKESLURM/$n.name")" != "$name" ]; then continue; fi
+    if [ -n "$partition" ] && [ "$(cat "$FAKESLURM/$n.partition")" != "$partition" ]; then continue; fi
+    if [ -f "$FAKESLURM/$n.started" ]; then s=RUNNING; else s=PENDING; fi
+    if [ -n "$state" ] && [ "$s" != "$state" ]; then continue; fi
+    line=${format//%i/$n}
+    line=${line//%j/$(cat "$FAKESLURM/$n.name")}
+    echo "${line//%T/$s}"
+done

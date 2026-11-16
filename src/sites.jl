@@ -6,6 +6,22 @@ struct Queue
     max_time::Union{Int,Nothing}      # seconds
     max_nodes::Union{Int,Nothing}
     max_gpus::Union{Int,Nothing}
+    one_at_a_time::Bool               # a second job of the same user is refused
+    preempt::Bool                     # its jobs can be stopped at any time: only for jobs with checkpoints
+    chain::Bool                       # false: not for a chain of jobs
+end
+
+"How MPI runs are set up and launched on a site."
+struct MPIRecipe
+    name::String
+    binary::String                    # "jll": MPICH_jll; "system": the site's MPI
+    launcher::String                  # "srun", or "mpiexec": the binary's own
+    launcher_args::Vector{String}
+    multi_node::Bool
+    modules::Vector{String}
+    julia_bin::Union{String,Nothing}  # a Julia that can load the site's MPI
+    preferences::Dict{String,Any}     # for MPIPreferences.use_system_binary
+    env::Dict{String,String}
 end
 
 "What a GPU job is given on a site, per GPU."
@@ -15,8 +31,7 @@ struct GPUs
     request_cores::Bool               # false: the site hands them out with the GPU
     mem::Union{String,Nothing}        # per GPU, such as "64G"; nothing: not asked for
     max::Union{Int,Nothing}           # per job
-    queues::Vector{Queue}
-    default_queue::Union{String,Nothing}
+    queues::Vector{Queue}             # in the order of preference
     precompile_on::Union{String,Nothing}   # where the site's GPU nodes differ from its CPU nodes
 end
 
@@ -34,11 +49,12 @@ struct Site
     partition::Bool                   # false: the site's submit filter chooses the partition
     max_time::Union{Int,Nothing}      # seconds, for a site without partitions
     cores::Int                        # per CPU node; 0: the site has no CPU nodes
+    numa::Int                         # NUMA domains per CPU node
     whole_node::Bool                  # a job gets whole nodes without asking for cores
     node_header::Vector{String}       # further batch options of a CPU job
-    queues::Vector{Queue}
-    default_queue::Union{String,Nothing}
+    queues::Vector{Queue}             # in the order of preference
     gpu::Union{GPUs,Nothing}
+    mpi::Dict{String,MPIRecipe}
     julia_bin::String
     depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
@@ -52,7 +68,7 @@ end
 
 islocal(site::Site) = site.host === nothing
 
-const SITE_TABLES = ["name", "connect", "paths", "slurm", "julia", "env"]
+const SITE_TABLES = ["name", "connect", "paths", "slurm", "julia", "env", "mpi"]
 
 function load_site(name::AbstractString)
     checkname("a site name", name)
@@ -77,22 +93,25 @@ function load_site(name::AbstractString)
 
     slurm = get(conf, "slurm", nothing)
     queues = Queue[]
-    cores, whole, header, gpu = Sys.CPU_THREADS, false, String[], nothing
+    cores, numa, whole, header, gpu = Sys.CPU_THREADS, 1, false, String[], nothing
     if slurm !== nothing
         node = get(slurm, "node", nothing)
         g = get(slurm, "gpu", nothing)
         node === nothing && g === nothing && fail("$file: [slurm] needs a node table, a gpu table or both")
         cores = 0
         if node !== nothing
-            cores, whole = node["cores"], get(node, "whole", false)
+            cores, numa, whole = node["cores"], get(node, "numa", 1), get(node, "whole", false)
             header = collect(String, get(node, "header", String[]))
         end
+        haskey(slurm, "default_queue") &&
+            fail("$file: `default_queue` is gone; list the queues in the order of preference")
         queues = read_queues(get(slurm, "queues", []))
         if g !== nothing
             occursin("%d", g["request"]) || fail("$file: [slurm.gpu] request needs a %d for the number of GPUs")
             gpu = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing),
-                       get(g, "max", nothing), read_queues(get(g, "queues", [])), get(g, "default_queue", nothing),
-                       get(g, "precompile_on", nothing))
+                       get(g, "max", nothing), read_queues(get(g, "queues", [])), get(g, "precompile_on", nothing))
+            haskey(g, "default_queue") &&
+                fail("$file: `default_queue` is gone; list the queues in the order of preference")
         end
     end
 
@@ -108,9 +127,8 @@ function load_site(name::AbstractString)
                 slurm === nothing ? true : get(slurm, "export_env", true),
                 slurm === nothing ? false : get(slurm, "partition", true),
                 slurm !== nothing && haskey(slurm, "max_time") ? parse_time(slurm["max_time"]) : nothing,
-                cores, whole, header, queues,
-                slurm === nothing ? nothing : get(slurm, "default_queue", nothing),
-                gpu,
+                cores, numa, whole, header, queues, gpu,
+                read_recipes(get(conf, "mpi", Dict{String,Any}()), file),
                 get(julia, "bin", "julia"),
                 get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
@@ -126,8 +144,72 @@ function read_queues(tables)
     return [Queue(q["partition"],
                   haskey(q, "min_time") ? parse_time(q["min_time"]) : nothing,
                   haskey(q, "max_time") ? parse_time(q["max_time"]) : nothing,
-                  get(q, "max_nodes", nothing), get(q, "max_gpus", nothing))
+                  get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
+                  get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "chain", true))
             for q in tables]
+end
+
+function read_recipes(tables, file)
+    recipes = Dict{String,MPIRecipe}()
+    for (name, t) in tables
+        checkname("$file: an MPI recipe's name", name)
+        binary = get(t, "binary", name)
+        binary in ("jll", "system") ||
+            fail("$file, [mpi.$name]: `binary` is \"jll\" or \"system\", not $(repr(binary))")
+        launcher = get(t, "launcher", "srun")
+        launcher in ("srun", "mpiexec") ||
+            fail("$file, [mpi.$name]: `launcher` is \"srun\" or \"mpiexec\", not $(repr(launcher))")
+        recipes[name] = MPIRecipe(name, binary, launcher, collect(String, get(t, "launcher_args", String[])),
+                                  get(t, "multi_node", launcher == "srun"),
+                                  collect(String, get(t, "modules", String[])), get(t, "julia", nothing),
+                                  Dict{String,Any}(get(t, "preferences", Dict{String,Any}())),
+                                  Dict{String,String}(k => string(v) for (k, v) in get(t, "env", Dict{String,Any}())))
+    end
+    return recipes
+end
+
+"""
+Why a job does not fit into a queue, or `nothing` if it fits. `busy` holds
+the partitions that have a job of this user already.
+"""
+function queue_misfit(qu::Queue; seconds, nodes, gpus, checkpoints, chain, busy)
+    qu.max_gpus !== nothing && gpus > qu.max_gpus && return "allows at most $(qu.max_gpus) GPUs"
+    qu.max_time !== nothing && seconds > qu.max_time && return "allows at most $(time_string(qu.max_time))"
+    qu.min_time !== nothing && seconds < qu.min_time && return "takes no less than $(time_string(qu.min_time))"
+    qu.max_nodes !== nothing && nodes > qu.max_nodes && return "allows at most $(qu.max_nodes) nodes"
+    qu.preempt && !checkpoints && return "is pre-emptible: only for a job with `checkpoints = true`"
+    qu.chain || !checkpoints || return "is not for a chain of jobs, which a job with checkpoints is"
+    qu.one_at_a_time && chain > 1 && return "takes one job at a time, not a chain"
+    qu.one_at_a_time && qu.partition in busy && return "takes one job at a time, and one is there already"
+    return nothing
+end
+
+"""
+The queue for a job: the named one, checked against its limits, or else the
+first in the profile's order that fits. A job with checkpoints prefers a
+pre-emptible queue.
+"""
+function choose_queue(site::Site, queues; name = nothing, what, busy = Set{String}(),
+                      seconds, nodes, gpus, checkpoints, chain)
+    kw = (; seconds, nodes, gpus, checkpoints, chain)
+    kind = gpus > 0 ? "GPU" : "CPU"
+    if name !== nothing
+        i = findfirst(qu -> qu.partition == name, queues)
+        i === nothing && fail("site $(site.name) has no queue $(repr(name)) for $kind jobs; its queues: ",
+                              join([qu.partition for qu in queues], ", "))
+        why = queue_misfit(queues[i]; busy, kw...)
+        why === nothing || fail("$what, but queue $name on $(site.name) $why")
+        return queues[i]
+    end
+    isempty(queues) && fail("site $(site.name) has no queues for $kind jobs in its profile")
+    order = checkpoints ? [filter(qu -> qu.preempt, queues); filter(qu -> !qu.preempt, queues)] : queues
+    reasons = String[]
+    for qu in order
+        why = queue_misfit(qu; busy, kw...)
+        why === nothing && return qu
+        push!(reasons, "$(qu.partition) $why")
+    end
+    fail("$what, which no queue of $(site.name) takes: ", join(reasons, "; "))
 end
 
 "Where a combination for CPU or GPU nodes is precompiled: \"login\" or \"compute\"."
@@ -138,8 +220,16 @@ known_sites() = sort!([splitext(f)[1] for f in readdir(sites_dir()) if endswith(
 
 # Shell text
 
-"Quote a string for bash."
-q(s) = Base.shell_escape(string(s))
+"""
+Quote a string for bash. Everything but plain words is put in single quotes,
+also what `Base.shell_escape` leaves bare: a `*` or a `~` that bash would
+expand.
+"""
+function q(s)
+    s = string(s)
+    occursin(r"^[A-Za-z0-9_@%+=:,./-]+$", s) && return s
+    return "'" * replace(s, "'" => "'\\''") * "'"
+end
 
 "A path as bash text; a leading `~/` becomes `\$HOME/`, which also works where `~` does not expand."
 shpath(p) = startswith(p, "~/") ? "\"\$HOME\"/" * q(p[3:end]) : q(p)

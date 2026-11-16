@@ -1,0 +1,31 @@
+# A TreeGeneralizedHarmonic octant row as a chain of jobs. `octant_runs.jl`
+# stops at `walltime` with exit code 3 and continues from `checkpoint`.
+#
+# Until the driver is converted to the restart contract (PLAN.md, "Immutable
+# outputs and restarts") it has one checkpoint directory and appends to its
+# CSV, which is what `mutable_restarts = true` allows. Converted, it takes
+# `restart_from=` as well: remove `mutable_restarts` and add
+# `from = "restart_from"`; `simlaunch check-restart` then tests it.
+name = "octant-chain"
+checkpoints = true
+mutable_restarts = true
+
+[restart]
+to = "checkpoint"
+walltime = "walltime"
+margin = "0:10:00"
+continue_code = 3
+
+[site.symmetry]                     # one H200; with checkpoints the queue is h200preq
+time = "4:00:00"
+resources = { gpus = 1 }
+env = "cuda"
+
+[site.trillium-gpu]                 # one H100; `submit --chain 2` queues two jobs
+time = "2:00:00"
+resources = { gpus = 1 }
+env = "cuda"
+
+[[run]]
+label = "ks"
+cmd = "test/octant_runs.jl backend=cuda case=ks interior=fitted L=8 N=16 roots=2 radii=4,2 t_end=100 chunk=1/2 cfl=1/2 amplitude=0 out=out"

@@ -163,10 +163,11 @@ Each site is one TOML file in SimLaunch's repository, `sites/<name>.toml`, and
 it is the single place a cluster fact is written down. The skills then point
 at the profiles instead of repeating them.
 
-A profile has five tables. `[connect]` says how to reach the site and how to
+A profile has six tables. `[connect]` says how to reach the site and how to
 check first; `[paths]` where code and output go; `[slurm]` the account and the
 queue rules; `[julia]` which Julia, which modules and where to precompile;
-`[env]` what every job exports. Trillium's CPU profile, abbreviated:
+`[mpi.<recipe>]` how MPI runs are set up and started; `[env]` what every job
+exports. Trillium's CPU profile, abbreviated:
 
 ```toml
 name = "trillium"
@@ -184,17 +185,25 @@ scratch = "/scratch/eschnett/claude/studies"
 account = "def-eschnett"
 export_env = false                     # sbatch runs with --export=NONE
 node = { cores = 192, numa = 8, mem = "767000M", whole = true }
-queues = [
+queues = [                             # in the order of preference
   { partition = "debug",   max_time = "1:00:00",  max_nodes = 4, one_at_a_time = true },
-  { partition = "compute", max_time = "24:00:00" },
+  { partition = "compute", min_time = "0:15:00", max_time = "24:00:00" },
 ]
 
 [julia]
 bin = "~/.juliaup/bin/julia"
-bin_mpi = "~/claude/julia-1.13.4-trillium/bin/julia"   # setrpaths-patched
-modules = []                           # a pure Julia job needs none; the MPI recipe loads StdEnv/2023
+modules = []                           # a pure Julia job needs none
 precompile_on = "login"               # login node is Zen 5 like the compute nodes
 compute_internet = false               # prepare fetches everything; jobs run offline
+
+[mpi.system]                           # Open MPI 4.1.5 through mpi_abi_wrapper
+julia = "~/claude/julia-1.13.4-trillium/bin/julia"   # setrpaths-patched: juliaup's cannot load it
+modules = ["StdEnv/2023"]
+launcher = "srun"
+launcher_args = ["--mpi=pmix"]
+[mpi.system.preferences]               # the keywords of MPIPreferences.use_system_binary
+library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
+abi = "MPIABI"
 
 [env]
 JULIA_PKG_OFFLINE = "true"
@@ -203,7 +212,8 @@ JULIA_PKG_OFFLINE = "true"
 The other profiles differ where the table above says they do. Symmetry's has
 `precompile_on = "compute"`, which makes `prepare` submit a short precompile
 job, and per-partition rules: `amddebugq` up to an hour, `amdq` beyond,
-`h200preq` only for runs that checkpoint, and `h200debugq` never chained.
+`h200preq` only for runs that checkpoint (`preempt = true`), and `h200debugq`
+never chained (`chain = false`).
 Nibi's and Fir's have `partition = false`, since their submit filters choose.
 `local` has no `[slurm]` table at all: its jobs run as background processes
 under the same layout.
@@ -218,12 +228,20 @@ request = "--gres=gpu:h200:%d"
 cores = 8                              # per GPU
 mem = "64G"                            # per GPU; always given
 max = 8
-default_queue = "h200debugq"
 queues = [
-  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2 },
+  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },
   { partition = "h200q",      max_time = "24:00:00" },
+  { partition = "h200preq",   max_time = "24:00:00", preempt = true },
 ]
 ```
+
+An MPI recipe names the binary (`jll`: MPICH_jll; `system`: the site's MPI),
+the launcher (`srun` with its arguments, or `mpiexec`: the binary's own,
+found through MPI.jl), the modules and variables its runs need, a Julia that
+can load the site's MPI where juliaup's cannot, and whether its ranks can be
+spread over several nodes. Symmetry has three: `jll` (MPICH_jll under
+`srun --mpi=pmi2`), `jll-fork` (MPICH_jll's `mpiexec` with Hydra forking the
+ranks, for one node and for GPU jobs) and `system` (HPC-X).
 
 Where the GPU nodes are another CPU than the CPU nodes, the table says where
 to precompile for them. Fir's login and CPU nodes are both Zen 5 and its GPU
@@ -238,9 +256,10 @@ and `via = "trig-login01"` for commands, which run there through the first
 connection. Its directories are not the CPU cluster's, since the two prepare
 for different CPUs.
 
-A profile also lists its known traps as data the generator acts on, for
-example `exclusive_breaks_threaded_subprocess = true` on Symmetry, so a
-test-suite job is written without `JULIA_EXCLUSIVE`.
+A known trap of a site is to become data the generator acts on, for example
+`exclusive_breaks_threaded_subprocess = true` on Symmetry, so a test-suite
+job is written without `JULIA_EXCLUSIVE`. None is implemented yet: the first
+suite job brings the first.
 
 ## Source snapshots
 
@@ -408,7 +427,7 @@ resources = { nodes = 1 }           # or { gpus = 1 }, { gpus = 4 } with ranks p
 mode = "parallel"                   # default "sequential"
 threads = 32                        # per run
 pin = false                         # true: JULIA_EXCLUSIVE + srun --cpu-bind=none
-env = "default"                     # or "cuda", "mpi", "test+cuda", … built by prepare
+env = "default"                     # or "cuda", "test", "test+cuda", … built by prepare
 
 [site.nibi]                         # the same node size
 time = "3:00:00"
@@ -448,27 +467,40 @@ own directory as it is printed, so a job that runs out of time keeps what it
 measured, and the job log echoes it at the end.
 
 **Per-run fields** override the job's: `variant`, `env`, `threads` (a list
-expands into a scan, `threads = [1, 8, 16, 32, 64]`), `julia` (a juliaup
-channel such as `"+1.13"`), `julia_args` (`["--check-bounds=yes"]`), `ranks`,
-`nodes`, `placement`, `mpi`, and `vars` for environment variables a script
-reads, such as TreeWaveOLDG's `TREEWAVEOLDG_RUNS`. An `[after]` table names
-one shell command run inside the job after the last run, for a table such as
-TreeAMR's `mpitable.awk`.
+expands into a scan, `threads = [1, 8, 16, 32, 64]`), `julia_args`
+(`["--check-bounds=yes"]`), `ranks`, `nodes`, `placement`, `mpi`, `prefix`,
+and `vars` for environment variables a script reads, such as TreeWaveOLDG's
+`TREEWAVEOLDG_RUNS`. A run's `julia` (a juliaup channel such as `"+1.13"`)
+is not implemented. An `[after]` table names one shell command run inside
+the job after the last run, for a table such as TreeAMR's `mpitable.awk`. It
+runs in the study's output directory, with `PROJECT` and
+`SIMLAUNCH_JOBDIRS` (this job's directories) exported, and its output goes
+to the job's log.
+
+**Environments.** `env` names kinds joined by `+`: `cuda` and `metal` add
+the device package, `test` the project's test dependencies, `mpi` MPI.jl set
+to the run's recipe. A run with `mpi` gets the `mpi` kind by itself, and an
+environment of its own per recipe, `envs/<variant>-<kinds>-<recipe>/`.
 
 **Placement.** `pin = true` is `JULIA_EXCLUSIVE=1` with
-`srun --cpu-bind=none` and `-t N,0`. `placement = "numa"` binds rank i of R to
-NUMA domain i·D/R with `numactl --cpunodebind --membind`, D from the profile
-(8 on Symmetry's EPYC 7543 nodes and on Trillium, 6 on Nibi).
+`srun --cpu-bind=none` and `-t N,0`. `placement = "numa"` binds rank i of
+the R on its node to NUMA domain i·D/R with `numactl --cpunodebind
+--membind`, D from the profile (8 on Symmetry's EPYC 7543 nodes and on
+Trillium, 6 on Nibi); a run without ranks gets domain 0. The two exclude
+each other: `JULIA_EXCLUSIVE` binds threads to the cores from 0 on, whatever
+`numactl` allows, so a run with `ranks` or `placement` is not pinned.
 `node = "cn095"` fixes the node for a benchmark, and every job records
 `lscpu`'s model.
 
-**MPI.** `mpi` names a recipe in the site profile: `jll` (MPICH_jll under
-`srun --mpi=pmi2`, or its own `mpiexec` with Hydra forking the ranks) or
-`system` (HPC-X on Symmetry, Open MPI on Nibi, the mpi_abi_wrapper on
-Trillium). Runs of one job may use different recipes and rank counts, which is
-how TreeAMR compares MPICH_jll with HPC-X at 1 to 8 ranks. `nodes` above 1
-restricts the queue choice to queues that allow it (on Symmetry `amdq`, since
-`amddebugq` takes one node).
+**MPI.** `mpi` names a recipe in the site profile, and `ranks` the number of
+ranks; `threads` is then per rank. Runs of one job may use different recipes
+and rank counts, which is how TreeAMR compares MPICH_jll with HPC-X at 1 to
+8 ranks. The batch header asks for as many tasks per node as the largest run
+starts there. A run's `nodes` spreads its ranks over that many of the job's
+nodes; `resources.nodes` above 1 restricts the queue choice to queues that
+allow it (on Symmetry `amdq`, since `amddebugq` takes one node). A recipe
+that starts its ranks with `srun` is refused in a GPU job, whose allocation
+is one task; such a job uses a recipe with the binary's own `mpiexec`.
 
 **Escape hatch.** `sbatch_args` adds lines to the batch header as written,
 and a run's `prefix` is put before its Julia command as written. A need that
@@ -485,7 +517,7 @@ site = "symmetry"                   # written for this hardware only
 time = "1:00:00"
 resources = { nodes = 1 }
 node = "cn095"
-pin = true
+env = "test"                        # the benchmark needs the test dependencies
 
 [[run]]
 label = "base-8r"
@@ -506,6 +538,9 @@ placement = "numa"
 mpi = "jll"
 # … 1, 2 and 4 ranks, both variants
 ```
+
+Both runs execute the study's own `bench/nested.jl`, each in its variant's
+environment, so they differ in the package only.
 
 **What the generator writes**, for every site, so no script forgets it:
 
@@ -529,8 +564,12 @@ mpi = "jll"
   that starts only after this job has ended
   ([Immutable outputs and restarts](#immutable-outputs-and-restarts)).
 
-**Queue choice.** The tool picks the cheapest queue that fits the spec, by
-rules in the profile:
+**Queue choice.** The tool picks the first queue in the profile's order that
+fits the spec: its time, its nodes or GPUs, and three rules a queue can
+carry. `one_at_a_time`: skipped while the user has a job there, which
+`submit` asks the site; `preempt`: only for a job with checkpoints, and
+preferred by one; `chain = false`: not for a job with checkpoints. The
+result:
 
 | Site | Fits in 1 h | Longer | GPU, no checkpoints | GPU with checkpoints |
 | --- | --- | --- | --- | --- |
@@ -539,7 +578,8 @@ rules in the profile:
 | Trillium | `debug` if no other debug job | `compute` | `compute` (H100) | `compute` |
 
 `--queue` overrides the choice; the tool then still checks the spec against
-that queue's limits and refuses with the limit it breaks.
+that queue's limits and refuses with the limit it breaks. When no queue
+fits, the refusal lists each queue with its reason.
 
 ## Submit, status, fetch and restarts
 
@@ -548,16 +588,24 @@ from the right login node (`trig-login01` for Trillium's GPUs), and marks
 every run's SimWatch directory queued with the job ID before returning. A
 study's runs are therefore visible in SimWatch from the moment they exist.
 
-**Status** is SimWatch's: `simlaunch status` runs `simwatch --print` on each
-site that holds runs of the named studies and prints one table. Erik's own
-view stays `simwatch <site>:<dir>`, which the tool prints at submission.
+**Status** reads SimWatch's files: `simlaunch status <study>…` prints one
+table of the runs on every site the study is prepared on, with each run's
+status, job and message. A run that says queued or running while the queue
+no longer knows its job is shown as `lost`. It reads the files itself, in
+one ssh call per site, and does not run `simwatch --print`, which would need
+SimWatch installed on every site. Erik's own view stays
+`simwatch <site>:<dir>`, which the tool prints at submission and with the
+table.
 
 **Fetch** copies a run's results back to
 `.claude/data/<study>/<site>/<run>/` in the project the study came from:
 logs, CSVs, `records.csv`, `simwatch.toml`, plots, `snapshot.toml` and the
 site's resolved manifests. The site is part of the path, so the same spec run
-on two sites never lands in one directory. Checkpoints and other files above
-a size limit stay on the cluster unless `--with-checkpoints` is given. The
+on two sites never lands in one directory. Checkpoints (`ck/`) stay on the
+cluster unless `--with-checkpoints` is given, and so do files above
+`--max-size` (100 MB by default). The copied files are read-only, as on the
+site; their directories are writable, so that a later fetch can add to them.
+`--to` names another directory, and `--run` single runs. The
 analysis scripts that read `.claude/data` (`test/aligned_study.jl`,
 `test/harmonic_spin_study.jl` and the rest) read a run's directory as they
 do now.
@@ -569,14 +617,18 @@ series reads a combined directory.
 **Restart chains.** A run with `checkpoints = true` is a chain of jobs, each
 in a directory of its own;
 [Immutable outputs and restarts](#immutable-outputs-and-restarts) has the
-layout and the rules. `simlaunch resubmit <run>` submits the next job of the
-chain, and `--chain N` submits N jobs with `--dependency=afterany`, which
-suits Trillium's and Nibi's 24 h limits.
+layout and the rules. `simlaunch resubmit <study> <spec>` submits the next
+job of the chain, and `--chain N` submits N jobs with
+`--dependency=afterany`, which suits Trillium's and Nibi's 24 h limits. A
+job of a chain whose runs have all finished ends at once. A run with
+checkpoints has one job at a time: `submit` refuses a second while one is
+queued or running.
 
-**Cleanup.** `simlaunch clean <study>` lists what it would delete on each site
-(snapshot, scratch, checkpoints, with sizes) and deletes only after
-confirmation, first restoring write permission on the job directories it made
-read-only. Nothing is ever deleted automatically: step H1's checkpoints alone
+**Cleanup.** `simlaunch clean <study> --site <site>` lists what it would
+delete there (the study's sources and caches, and its output, with sizes) and
+deletes only after confirmation, first restoring write permission on the job
+directories it made read-only. It refuses while a job of the study is queued
+or running. The snapshot on the laptop stays. Nothing is ever deleted automatically: step H1's checkpoints alone
 reached 94 GB, and deleting checkpoints has been Erik's decision each time.
 
 ## Immutable outputs and restarts
@@ -599,10 +651,12 @@ its own:
 ```
 <scratch root>/<study>/<run>/
   simwatch.toml          live status of the whole run, updated by every job (exempt)
-  slurm-2864584.out      Slurm's own log of one job ID
+  diskusage.toml         what each ended job holds (exempt)
   001-2864584/           the first job: its logs, CSVs, plots, ck/
   002-2864611/           a restart: reads 001-2864584/ck/, writes only here
   combined-1/            written by a combine step, never by a job
+<scratch root>/<study>/logs/
+  <spec>-2864584.out     Slurm's own log of one job ID, for all its runs
 ```
 
 **What the generated script does.**
@@ -616,16 +670,22 @@ its own:
   successor does it.
 - No job runs twice under one job ID. Every job is submitted with
   `--no-requeue`, and `--open-mode=append` is never used. A pre-empted job
-  submits its successor from its SIGTERM handler within the 30 s grace, unless
-  a `--chain` successor is already pending; this is the branch on exit code
-  143 that step B1's scripts already have. The successor is submitted with
+  submits its successor from its SIGTERM handler, before it stops its runs,
+  within the 30 s grace. The successor is submitted with
   `--dependency=afterany:` and the job's own ID, so it cannot start, and
   cannot make this directory read-only, while this job still writes. A node
   failure ends the chain, and
   `simlaunch resubmit` or a pending `--chain` successor continues it.
-- Slurm's `--output` goes to `slurm-<jobid>.out` beside the job directories,
-  since Slurm cannot write into a directory that does not exist yet. With
-  unique job IDs it, too, is written by one job only.
+- Slurm cannot tell a job why it is stopped: pre-emption, the time limit
+  and `scancel` all arrive as SIGTERM. The handler therefore submits a
+  successor only on a queue the profile marks `preempt`, only more than a
+  minute before the time limit, only when no job of the same name is pending
+  already, and not while the file `<scratch root>/<study>/STOP` exists. To
+  stop such a chain for good, create that file and then cancel the job.
+- Slurm's `--output` goes to `logs/<spec>-<jobid>.out` in the study's output
+  directory, since a job can hold several runs and Slurm cannot write into a
+  directory that does not exist yet. With unique job IDs it, too, is written
+  by one job only.
 - `simwatch.toml` is live status, not output: each job updates the run's one
   file, and SimWatch's `previous_job_ids` records the chain.
 
@@ -640,32 +700,44 @@ to = "checkpoint"        # this job's own ck/
 walltime = "walltime"    # seconds: the job's time limit minus a startup margin
 ```
 
-The first job gets only `to`. A driver writes its CSVs and records into its
-working directory, which is the job directory, so a restart starts new files
-rather than extending old ones.
+The arguments are passed as `<name>=<value>` after the run's own. The first
+job gets only `to`. A driver writes its CSVs and records into its working
+directory, which is the job directory, so a restart starts new files rather
+than extending old ones. `margin` (5 minutes by default) is the part of the
+time limit kept back from `walltime`. `continue_code` is the driver's exit
+code when it stopped at its walltime (3 for TreeGeneralizedHarmonic's
+drivers): the run is then `stopped`, not failed, and the next job continues
+it. A run that an earlier job finished is not run again.
 
 `from` is not always the predecessor's `ck/`: a job killed before its first
 checkpoint leaves none. The script passes the `ck/` of the newest job
 directory that holds a complete checkpoint, and no `from` when there is none.
 The tool cannot tell a complete checkpoint from a partial one by itself, so
 the driver must write each checkpoint under a temporary name and rename it
-when it is whole; the tool then ignores temporary names. This is a
-requirement on the driver that the tool can test but not enforce.
+when it is whole; the tool then ignores temporary names (`*.tmp`, `*.tmp.*`
+and names that start with a dot, or the patterns in `[restart] temporary`).
+This is a requirement on the driver that the tool can test but not enforce.
 
-**Checking a driver.** `simlaunch check-restart <spec>` runs a short chain
-of the spec twice on one site: once uninterrupted, once with its first job
-killed after a checkpoint. It passes when the killed job's directory is
-unchanged afterwards (checksums), no temporary checkpoint name was read, and
-the project's own compare command, named in the spec, accepts the combined
-result against the uninterrupted one. What "the same result" means stays
-with the project.
+**Checking a driver.** `simlaunch check-restart <study> <spec>` runs the
+spec's runs twice on one site, under new labels: once in one job, and once
+with the first job stopped after its first complete checkpoint and continued
+by further jobs. It passes when the stopped job's directory is unchanged
+afterwards (file list and checksums), the second job started from the first
+one's checkpoint, and the project's own compare script, `[restart] compare`,
+accepts the chain's job directories against the uninterrupted one. The
+comparison runs as a job, in the prepared environment, with the directories
+as its last arguments. What "the same result" means stays with the project.
+That a restart never reads a temporary name cannot be observed from outside;
+the check reports whether the stopped job left one, since only then was the
+restart exposed to it.
 
 **Storage.** Each job keeps its own checkpoints, where a shared directory
 kept one set, so a chain of N jobs holds up to N sets. A driver should keep
 only its newest checkpoint in its `ck/`. SimLaunch never deletes checkpoints
 by itself, and neither does a job: whoever runs the jobs deletes them.
-`simlaunch clean <run> --old-checkpoints` lists the checkpoints of every job
-but the newest, with sizes, and deletes them after confirmation. The
+`simlaunch clean <study> --site <site> --old-checkpoints` lists the
+checkpoints of every job but each run's newest, with sizes, and deletes them
+after confirmation; the deletion is recorded in the run's `diskusage.toml`. The
 clusters' scratch purges apply to these files as to any others: fetch what
 must be kept.
 
@@ -676,27 +748,33 @@ by its successor, as with the read-only step. The measurement walks one job's
 files only, and runs under a time limit (60 s); when it does not finish, the
 entry says `unknown` and the job still ends. `simlaunch usage <study>` adds
 up the recorded numbers per run, per job and per site. It reads only these
-small files and never walks a tree, so it answers at once, and `clean` shows
-the same numbers. `simlaunch usage --measure` walks the trees for entries
-that are `unknown` or for a job still running, and is the only slow path.
+small files and never walks a tree, so it answers at once.
+`simlaunch usage --measure` walks the trees for entries that are `unknown`
+or for a job still running, and is the only slow path. `clean` measures
+what it is about to delete.
 
 SimWatch shows a run while it runs, when the running job's size is not known
 yet, so it is not where disk usage is asked for. It gets what is known at no
 cost: each job's last status update, the one that marks it finished or
-failed, also writes a `diskusage` key with the run's recorded total. During a
+failed, also writes a `[diskusage]` table with the run's recorded total. During a
 chain SimWatch therefore shows the size of the jobs that have ended, and
 after the run its full size.
 
 **Combining.** Reading a run as one series is a later step.
 `[combine] cmd = "…"` names a project script that reads the job directories in
-order and writes a new `combined-<n>/`; `simlaunch combine <run>` runs it on
-the site, or on the laptop after a fetch. Each combine writes a new directory,
-so its output is immutable too.
+order and writes a new `combined-<n>/`; `simlaunch combine <study> <spec>`
+runs it on the site's login node, with the job directories as its last
+arguments and the new directory as its working directory. It runs with a
+depot of its own in front of the study's, so a login node of another CPU
+compiles there and the study's caches stay untouched. Each combine writes a
+new directory, so its output is immutable too. Running it on the laptop
+after a fetch is not implemented.
 
 **Opting out.** `mutable_restarts = true` keeps today's behaviour for a driver
-that is not converted yet: one shared checkpoint directory passed as a single
-argument, appended CSVs, no read-only step, and requeue under the same job ID
-with `--open-mode=append`. `simlaunch submit` prints a warning for such a
+that is not converted yet: one shared directory for all jobs of a run
+(`<run>/mutable/`), its `ck/` passed as the single argument `to`, appended
+CSVs, no read-only step, and requeue under the same job ID with
+`--open-mode=append`. `simlaunch submit` prints a warning for such a
 spec. TreeGeneralizedHarmonic's three checkpointing drivers use it until
 they are converted, all three together, in that repository.
 
@@ -877,6 +955,26 @@ and for clusters that are down.
    by the existing study scripts, and TreeAMR's nested benchmark runs as two
    variants with NUMA placement and two MPI recipes, on one node and on two.
    About three days.
+
+   Implemented on 2026-11-16, and tested on the laptop only:
+
+   | Part | Tested by |
+   | --- | --- |
+   | Queue choice by rule | the profiles of Trillium and Symmetry, without a queue |
+   | A chain of three jobs with `--chain`, stopped at the walltime | a real driver under stand-ins for `sbatch`, `squeue` and `scancel` |
+   | A stopped job on a pre-emptible queue submits its successor | the same, with SIGTERM to the job |
+   | `check-restart`, passing and failing | real local jobs, a toy driver that follows the contract |
+   | `status`, `fetch`, `usage`, `clean`, `combine` | the same runs |
+   | Variants, test dependencies, MPI ranks under MPICH_jll's `mpiexec` | a run on the laptop, 2 and 3 ranks, by hand |
+   | `srun` launchers, `numactl` placement, several nodes, the site's MPI | the generated scripts only (`test/reference/symmetry-nested.sh`) |
+
+   Open, all of it on clusters: every item of the done-when list above.
+   Unverified cluster facts the scripts rely on: that `sbatch` works on
+   Symmetry's compute nodes (the successor of a pre-empted job), that
+   HPC-X's `mpiexec` runs on the AMD nodes, and that `numactl` is on the
+   compute nodes' `PATH`. Not implemented: a run's `julia` channel, the
+   memory part of the resource check, `--snapshot-pins`, `combine` on the
+   laptop, and the removal of a snapshot from the laptop by `clean`.
 4. **Migration.** The tables above, one script at a time, each when a run of
    it is due. Done when `symmetry-run.sh` and XCTS's three scripts are retired
    and the skills point at the profiles.
