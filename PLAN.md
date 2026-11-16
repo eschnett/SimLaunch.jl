@@ -999,6 +999,17 @@ and for clusters that are down.
    | MPI on two nodes, `amdq`: 16 and 8 ranks under `srun`, 8 under HPC-X | 599491, 599498 | the ranks split evenly over cn095 and cn096, each on its domain |
    | `wait`, `status`, `usage`, `fetch` | the same | as on the laptop |
 
+   Run on Trillium's CPU nodes on the same day, with the same toy project,
+   prepared on the login node, both jobs in `debug`:
+
+   | Run | Job | Result |
+   | --- | --- | --- |
+   | MPI on one node: 8 ranks × 24 threads for two variants under MPICH_jll and `srun --mpi=pmi2`; 8 × 24 and 2 × 4 under the system's Open MPI (mpi_abi_wrapper, the patched Julia, `srun --mpi=pmix`) | 2871423 on tri0494 | every rank on its own NUMA domain of 24 cores, each variant its own version |
+   | MPI on two nodes: 16 × 24 under both recipes, 8 × 24 and 2 × 4 under the system's | 2871446 on tri0079 and tri0655 | the ranks split evenly over the nodes, each on its domain |
+
+   Nothing had to be changed for Trillium. `srun` warns as on Symmetry when
+   a step's `--cpus-per-task` exceeds the job's.
+
    TreeAMR's nested benchmark, on the same day: `bench/nested.jl` at
    `N = 16` for two variants, both `main` at bdb023f, so the two columns
    test the mechanism and the scatter, not a change

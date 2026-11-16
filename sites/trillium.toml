@@ -33,7 +33,7 @@ launcher_args = ["--mpi=pmi2"]
 env = { OMP_NUM_THREADS = "1" }
 
 # Open MPI 4.1.5 of StdEnv/2023 through mpi_abi_wrapper. juliaup's Julia cannot
-# load it; the patched one can. Not yet run through SimLaunch.
+# load it; the patched one can. Both recipes ran on one and two nodes on 2026-11-16.
 [mpi.system]
 julia = "~/claude/julia-1.13.4-trillium/bin/julia"
 modules = ["StdEnv/2023"]              # also sets the OMPI_MCA variables that keep Open MPI off libfabric

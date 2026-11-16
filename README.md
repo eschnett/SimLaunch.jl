@@ -202,7 +202,9 @@ Milestones 1 to 3 of the plan's four are implemented.
 
 - Run on clusters:
   - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
-    side, and a pinned thread scan of TreeWaveOLDG, 1 to 192 threads.
+    side, a pinned thread scan of TreeWaveOLDG, 1 to 192 threads, and,
+    with a toy project, MPI ranks on one and two nodes under MPICH_jll and
+    under the system's Open MPI, each rank on its NUMA domain.
   - `fir`: S1's sweep from the same spec, with the same results, and the
     octant row below on one H100, after a precompile job on a GPU node.
   - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
@@ -220,6 +222,6 @@ Milestones 1 to 3 of the plan's four are implemented.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
   ranks under MPICH_jll's `mpiexec`.
 - Not yet run with a real code: restart chains. A real pre-emption
-  has not happened, only its signal. Trillium's MPI recipes are untried.
+  has not happened, only its signal.
 - Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
   refused for; the memory part of the resource check; `--snapshot-pins`.
