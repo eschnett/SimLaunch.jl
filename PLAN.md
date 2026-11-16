@@ -1025,8 +1025,14 @@ and for clusters that are down.
    | 8 × 8, MPICH_jll under `srun` | 0.0566 | 0.0579 | 2.2 % |
    | 8 × 8, HPC-X | | 0.0439 | 24 % faster than MPICH_jll |
 
-   The two-node job (16 ranks, 8 on each node, `amdq`) was submitted as
-   599511 and was still waiting for nodes when this was written.
+   Two nodes, 16 ranks × 8 threads, 8 ranks on each node
+   ([`examples/treeamr-nested-2nodes.toml`](examples/treeamr-nested-2nodes.toml)):
+   job 599511 on cn087 and cn099, `amdq`, 2 minutes:
+
+   | Ranks × threads | `base` | `new` | Difference |
+   | --- | --- | --- | --- |
+   | 16 × 8, MPICH_jll under `srun` | 0.0433 | 0.0444 | 2.6 % |
+   | 16 × 8, HPC-X | | 0.0298 | 33 % faster than MPICH_jll |
 
    What these runs found and fixed:
 
