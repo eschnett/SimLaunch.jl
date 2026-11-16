@@ -156,7 +156,7 @@ started again.
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
 `--with-checkpoints` and `--max-size` change that. `clean` refuses while a
 job of the study is queued or running, and never touches the snapshot on the
-laptop.
+laptop. It does not need the snapshot either.
 
 ## Restarts
 
@@ -207,6 +207,8 @@ Milestones 1 to 3 of the plan's four are implemented.
     under the system's Open MPI, each rank on its NUMA domain.
   - `fir`: S1's sweep from the same spec, with the same results, and the
     octant row below on one H100, after a precompile job on a GPU node.
+  - `nibi`: S1's sweep from the same spec, with the same results, after a
+    precompile job on a compute node.
   - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
     `cuda` environment.
   - `symmetry`: the same row on one H200, after a precompile job on an H200
@@ -217,8 +219,8 @@ Milestones 1 to 3 of the plan's four are implemented.
     for two variants on one node.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
 - Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
-  `scancel`: the profile `nibi`, a precompile lock that is held or stale, a chain of jobs, a pre-empted job
-  that submits its successor, and `check-restart`.
+  `scancel`: a precompile lock that is held or stale, a pre-empted job that
+  submits its successor, and Nibi's GPU jobs.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
   ranks under MPICH_jll's `mpiexec`.
 - Not yet run with a real code: restart chains. A real pre-emption

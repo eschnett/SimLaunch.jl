@@ -643,7 +643,8 @@ queued or running.
 delete there (the study's sources and caches, and its output, with sizes) and
 deletes only after confirmation, first restoring write permission on the job
 directories it made read-only. It refuses while a job of the study is queued
-or running. The snapshot on the laptop stays. Nothing is ever deleted automatically: step H1's checkpoints alone
+or running. The snapshot on the laptop stays, and is not needed: a study
+whose snapshot is gone can still be removed from a site. Nothing is ever deleted automatically: step H1's checkpoints alone
 reached 94 GB, and deleting checkpoints has been Erik's decision each time.
 
 ## Immutable outputs and restarts
@@ -957,10 +958,12 @@ and for clusters that are down.
    | TreeWaveOLDG thread scan, pinned | Trillium (for Symmetry) | 2869575 | 1 to 192 threads, `rhs` 40 times faster |
    | Octant smoke row | Fir, one H100 (fc10605) | 4409948 | finished, the same values as on Symmetry; precompile job 4409134 on a GPU node |
    | The same scan | Symmetry, cn102 (EPYC 7543) | 599475 | 1 to 64 threads, `rhs` 0.375 s to 0.020 s at 32; precompile job 599473 |
+   | S1's sweep | Nibi, c143 | 27514859 | six runs in 27 minutes, `M_irr` identical to Trillium's and Fir's in all twelve digits; precompile job 27514148 on c151 |
 
-   Open: S1's sweep on Nibi, when it is back. Seen on Symmetry on
-   2026-11-16: a version report that lists a difference (ForwardDiff 1.5.0
-   there, 1.4.8 on Trillium). Not yet seen on a cluster: a precompile lock
+   Nibi's nodes came back later that day, and the sweep ran there too,
+   which completes this milestone. Seen on Symmetry and on Nibi: a version
+   report that lists a difference (ForwardDiff 1.5.0 there, 1.4.8 on
+   Trillium and Fir). Not yet seen on a cluster: a precompile lock
    that is held or stale.
 3. **Queue rules, status, fetch, restarts.** SimLaunch delivers the restart
    contract and `simlaunch check-restart`. Converting TreeGeneralizedHarmonic's
