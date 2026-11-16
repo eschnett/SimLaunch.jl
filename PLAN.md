@@ -998,6 +998,24 @@ and for clusters that are down.
    | MPI on two nodes, `amdq`: 16 and 8 ranks under `srun`, 8 under HPC-X | 599491, 599498 | the ranks split evenly over cn095 and cn096, each on its domain |
    | `wait`, `status`, `usage`, `fetch` | the same | as on the laptop |
 
+   TreeAMR's nested benchmark, on the same day: `bench/nested.jl` at
+   `N = 16` for two variants, both `main` at bdb023f, so the two columns
+   test the mechanism and the scatter, not a change
+   ([`examples/treeamr-nested.toml`](examples/treeamr-nested.toml)). One
+   node, job 599512 on cn099 (EPYC 7543), 7 minutes, precompile job 599510;
+   the minimum time of a fill, in seconds:
+
+   | Ranks × threads | `base` | `new` | Difference |
+   | --- | --- | --- | --- |
+   | 1 × 1 | 0.6008 | 0.6014 | 0.1 % |
+   | 2 × 1 | 0.4632 | 0.4604 | −0.6 % |
+   | 4 × 1 | 0.2367 | 0.2364 | −0.1 % |
+   | 8 × 8, MPICH_jll under `srun` | 0.0566 | 0.0579 | 2.2 % |
+   | 8 × 8, HPC-X | | 0.0439 | 24 % faster than MPICH_jll |
+
+   The two-node job (16 ranks, 8 on each node, `amdq`) was submitted as
+   599511 and was still waiting for nodes when this was written.
+
    What these runs found and fixed:
 
    - **A cache from one AMD generation is rejected on another.** The first
@@ -1019,8 +1037,10 @@ and for clusters that are down.
    under HPC-X's `mpiexec` Julia writes terminal title sequences into the
    output.
 
-   Open: every item of the done-when list above. A real pre-emption has not
-   happened yet, only its signal. Not implemented: a run's `julia` channel, the
+   Open of the done-when list: `check-restart` for the converted drivers,
+   a checkpointed GPU row on `h200preq`, a chain on Trillium with its
+   results read by the study scripts, and the nested benchmark's two-node
+   job. A real pre-emption has not happened yet, only its signal. Not implemented: a run's `julia` channel, the
    memory part of the resource check, `--snapshot-pins`, `combine` on the
    laptop, and the removal of a snapshot from the laptop by `clean`.
 4. **Migration.** The tables above, one script at a time, each when a run of

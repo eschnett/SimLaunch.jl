@@ -210,7 +210,8 @@ Milestones 1 to 3 of the plan's four are implemented.
     node; TreeWaveOLDG's thread scan on an AMD node; and, with a toy
     project, a chain of three jobs, `check-restart`, a stopped job that
     submits its successor, and MPI ranks on one and two nodes under three
-    recipes, each rank on its NUMA domain.
+    recipes, each rank on its NUMA domain; and TreeAMR's nested benchmark
+    for two variants on one node.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
 - Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
   `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
@@ -218,7 +219,7 @@ Milestones 1 to 3 of the plan's four are implemented.
   that submits its successor, and `check-restart`.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
   ranks under MPICH_jll's `mpiexec`.
-- Not yet run with a real code: restart chains and MPI. A real pre-emption
+- Not yet run with a real code: restart chains. A real pre-emption
   has not happened, only its signal. Trillium's MPI recipes are untried.
 - Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
   refused for; the memory part of the resource check; `--snapshot-pins`.

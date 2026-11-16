@@ -2,7 +2,7 @@
 # written once and never changed.
 
 const DEFAULT_EXCLUDES = [".git", "Manifest*.toml", "*~", ".#*", "#*#", ".DS_Store",
-                          "out/", "*.jls", ".claude/data/"]
+                          "out/", "*.jls", ".claude/data/", ".claude/worktrees/"]
 
 "The Julia files of `templates/` that every study carries in its `tools/`."
 const TOOLS = ["check_precompiled.jl", "make_env.jl", "set_mpi.jl", "mpiexec.jl"]

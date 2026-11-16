@@ -3,17 +3,21 @@
 # NUMA domain, under two MPI recipes. Take the snapshot with the baseline as
 # a variant:
 #
-#     simlaunch snapshot ~/src/jl/TreeAMR --study nested1 --variant base=~/src/jl/TreeAMR-main
+#     simlaunch snapshot ~/src/jl/TreeAMR --study nested1 --variant base=<baseline checkout>
 #
 # Both versions run the study's own `bench/nested.jl`; they differ in the
 # package only. Written for Symmetry's 64-core nodes with 8 NUMA domains.
+# One node. `treeamr-nested-2nodes.toml` is the same on two.
 name = "nested"
 site = "symmetry"
 time = "1:00:00"
-resources = { nodes = 1 }           # { nodes = 2 } and `nodes = 2` in a run spread its ranks over two nodes
+resources = { nodes = 1 }
 env = "test"                        # the benchmark needs the test dependencies
 placement = "numa"
 vars = { TREEAMR_BENCH_N = "16" }
+
+[after]                             # the timed fills of every run, in the job's log
+cmd = 'for d in $SIMLAUNCH_JOBDIRS; do echo "== $d"; grep -E "^T.*fill" "$d/output.log"; done'
 
 [[run]]
 label = "base-1x1"
@@ -31,6 +35,36 @@ ranks = 1
 threads = 1
 
 [[run]]
+label = "base-2x1"
+variant = "base"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 2
+threads = 1
+
+[[run]]
+label = "new-2x1"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 2
+threads = 1
+
+[[run]]
+label = "base-4x1"
+variant = "base"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 4
+threads = 1
+
+[[run]]
+label = "new-4x1"
+cmd = "bench/nested.jl mpi"
+mpi = "jll"
+ranks = 4
+threads = 1
+
+[[run]]
 label = "base-8x8"
 variant = "base"
 cmd = "bench/nested.jl mpi"
@@ -45,8 +79,8 @@ mpi = "jll"
 ranks = 8
 threads = 8
 
-[[run]]
-label = "new-8x8-system"            # the same under the site's MPI
+[[run]]                             # the same under the site's MPI, HPC-X
+label = "new-8x8-system"
 cmd = "bench/nested.jl mpi"
 mpi = "system"
 ranks = 8
