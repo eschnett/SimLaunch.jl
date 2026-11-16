@@ -193,14 +193,17 @@ end
 List what the study holds on the site, and delete it after confirmation: the
 whole study there, or with `old_checkpoints` the checkpoints of every job but
 each run's newest. Nothing is deleted while a job of the study is queued or
-running. Returns whether it deleted.
+running. Needs no snapshot on the laptop, only the study on the site. Returns
+whether it deleted.
 """
 function clean(study::AbstractString; site::AbstractString, old_checkpoints::Bool = false, runs = String[],
                yes::Bool = false, io::IO = stdout, input::IO = stdin)
     s = load_site(site)
-    load_snapshot(study)
+    checkname("a study name", study)     # the snapshot on the laptop is not needed, and may be gone
     check_connection(s)
     code, scratch = study_code(s, study), study_scratch(s, study)
+    there = readsite(s, "for d in $(q(code)) $(q(scratch)); do [ -d \"\$d\" ] && echo \"\$d\"; done; true")
+    isempty(strip(there)) && fail("no study $(repr(study)) on $(s.name): neither $code nor $scratch exists")
     names = [name for (_, name) in queued_jobs(s) if startswith(name, "$study-")]
     isempty(names) || fail("jobs of study $study are queued or running on $(s.name) ($(join(unique(names), ", "))); nothing is deleted")
     if !s.slurm
@@ -245,7 +248,8 @@ function clean(study::AbstractString; site::AbstractString, old_checkpoints::Boo
         runsite(s, "if [ -d $(q(dir)) ]; then chmod -R u+w $(q(dir)) && rm -rf $(q(dir)); fi")
     end
     rm(joinpath(manifest_store(study), s.name); recursive = true, force = true)
-    println(io, "deleted study $study on $(s.name); its snapshot on the laptop stays ($(joinpath(cache_root(), study)))")
+    snapshot = joinpath(cache_root(), study)
+    println(io, "deleted study $study on $(s.name)", isdir(snapshot) ? "; its snapshot on the laptop stays ($snapshot)" : "")
     return true
 end
 

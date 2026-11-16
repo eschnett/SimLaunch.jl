@@ -673,6 +673,17 @@ end
             @test !ispath(study_code(cluster, "toy")) && !ispath(study_scratch(cluster, "toy"))
             @test isfile(joinpath(ENV["SIMLAUNCH_CACHE"], "toy", "snapshot.toml"))   # the snapshot stays
             @test all(r -> r.site == "local", status(["toy"]; io = devnull))
+            @test_throws "on cluster: neither" clean("toy"; site = "cluster", yes = true, io = devnull)
+            @test_throws "on local: neither" clean("nosuch"; site = "local", yes = true, io = devnull)
+            # a study whose snapshot is gone from the laptop can still be removed from a site
+            lost = load_site("local")
+            for dir in (study_code(lost, "lost"), study_scratch(lost, "lost"))
+                mkpath(joinpath(dir, "sub")); chmod(joinpath(dir, "sub"), 0o555)
+            end
+            out = IOBuffer()
+            @test clean("lost"; site = "local", yes = true, io = out)
+            @test !ispath(study_code(lost, "lost")) && !ispath(study_scratch(lost, "lost"))
+            @test !occursin("snapshot", String(take!(out)))
         end
     end
     run(`chmod -R u+w $root`)
