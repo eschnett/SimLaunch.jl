@@ -1,0 +1,11 @@
+# The laptop. No [slurm] table: a job is a background process under the same
+# layout as on a cluster. Cores are detected when the tool runs.
+name = "local"
+
+[paths]
+code = "~/.local/share/simlaunch/studies"
+scratch = "~/.local/share/simlaunch/runs"
+
+[julia]
+bin = "julia"
+precompile_on = "login"

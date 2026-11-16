@@ -1,0 +1,32 @@
+# Trillium's CPU cluster (Alliance / SciNet). Facts from the trillium-hpc
+# skill, checked on the cluster on 2026-11-15.
+name = "trillium"
+
+[connect]
+host = "trillium"
+check = "ssh -O check trillium"      # MFA: never open a new connection
+hint = "run: ssh -fN trillium"
+
+[paths]
+code = "/home/eschnett/claude/studies"       # read-only in jobs
+scratch = "/scratch/eschnett/claude/studies"
+
+[slurm]
+account = "def-eschnett"
+export_env = false                     # sbatch runs with --export=NONE
+node = { cores = 192, numa = 8, mem = "767000M", whole = true }
+default_queue = "compute"
+queues = [
+  { partition = "debug",   max_time = "1:00:00",  max_nodes = 4, one_at_a_time = true },
+  { partition = "compute", min_time = "0:15:00", max_time = "24:00:00" },   # sbatch refuses less than 15 min
+]
+
+[julia]
+bin = "~/.juliaup/bin/julia"
+modules = []                           # a pure Julia job needs none
+precompile_on = "login"                # login node is Zen 5 like the compute nodes
+precompile_tasks = 8                   # login nodes are shared
+compute_internet = false               # prepare fetches everything; jobs run offline
+
+[env]
+JULIA_PKG_OFFLINE = "true"

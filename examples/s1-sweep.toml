@@ -1,0 +1,38 @@
+# Step S1's sweep of XCTS-harmonic: the six runs of the hand-written
+# sweep.sh (Trillium job 2864584, 18 minutes, up to 157 GB per run).
+name = "sweep1"
+project = "XCTS-harmonic"           # relative to the snapshot's src/
+blas_threads = 1
+
+[site.trillium]                     # a 192-core node: the six runs side by side
+time = "3:00:00"
+resources = { nodes = 1 }
+mode = "parallel"
+threads = 32
+
+[site.local]                        # the laptop: one run after another; with 36 GB
+mode = "sequential"                 # only p6 fits (--run p6)
+
+[[run]]
+label = "p6"
+cmd = "examples/harmonic_single.jl p=6"
+
+[[run]]
+label = "p8"
+cmd = "examples/harmonic_single.jl p=8"
+
+[[run]]
+label = "p10"
+cmd = "examples/harmonic_single.jl p=10"
+
+[[run]]
+label = "p6r2"
+cmd = "examples/harmonic_single.jl p=6 M=4 M_h=4 M_f=4 M_i=4 M_s=8"
+
+[[run]]
+label = "p8r2"
+cmd = "examples/harmonic_single.jl p=8 M=4 M_h=4 M_f=4 M_i=4 M_s=8"
+
+[[run]]
+label = "p8h4"
+cmd = "examples/harmonic_single.jl p=8 M_h=4 M_s=8"
