@@ -1,0 +1,11 @@
+#!/bin/bash
+# A stand-in for sbatch in the tests: starts the script at once, in the
+# background, with a job ID, and writes its output where --output says.
+script="${@: -1}"
+mkdir -p "$FAKESLURM"
+n=$(( $(cat "$FAKESLURM/counter" 2>/dev/null || echo 1000) + 1 ))
+echo "$n" > "$FAKESLURM/counter"
+out=$(sed -n 's/^#SBATCH --output=//p' "$script" | sed "s/%j/$n/")
+SLURM_JOB_ID=$n SLURM_JOB_NAME=fake nohup bash "$script" > "${out:-/dev/null}" 2>&1 < /dev/null &
+echo $! > "$FAKESLURM/$n.pid"
+echo "$n"

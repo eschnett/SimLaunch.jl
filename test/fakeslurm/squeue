@@ -1,0 +1,8 @@
+#!/bin/bash
+# A stand-in for squeue in the tests: `squeue -h -j ID -o %T`.
+while [ $# -gt 0 ]; do
+    if [ "$1" = -j ]; then id=$2; fi
+    shift
+done
+pid=$(cat "$FAKESLURM/$id.pid" 2>/dev/null) || exit 0
+if kill -0 "$pid" 2>/dev/null; then echo RUNNING; fi

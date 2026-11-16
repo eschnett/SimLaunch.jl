@@ -1,0 +1,24 @@
+# What one node does with TreeWaveOLDG: bin/benchmark.jl in a thread scan,
+# 3D, P = 3, 16.8M nodes in two block sizes. As bin/symmetry/benchmark.sh.
+name = "threads"
+pin = true                          # JULIA_EXCLUSIVE with srun --cpu-bind=none
+blas_threads = 1
+
+[site.trillium]                     # 192 cores in 8 NUMA domains of 24
+time = "1:00:00"
+resources = { nodes = 1 }
+threads = [1, 8, 24, 48, 96, 192]   # a list is a scan: one run per count
+
+[site.fir]                          # the same node
+time = "1:00:00"
+resources = { nodes = 1 }
+threads = [1, 8, 24, 48, 96, 192]
+
+[site.symmetry]                     # 64 cores
+time = "1:00:00"
+resources = { nodes = 1 }
+threads = [1, 8, 16, 32, 64]
+
+[[run]]
+label = "bench"
+cmd = "bin/benchmark.jl --D=3 --P=3 --scan=4:16,8:8 --reps=5"

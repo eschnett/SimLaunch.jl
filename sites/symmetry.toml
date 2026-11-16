@@ -1,0 +1,41 @@
+# Symmetry (Perimeter Institute): AMD CPU nodes and two H200 nodes. Facts
+# from the symmetry-hpc skill (partitions checked there on 2026-10-14).
+name = "symmetry"
+
+[connect]
+host = "symmetry"                      # a tunnel that Erik opens
+check = "ssh -o BatchMode=yes -o ConnectTimeout=10 symmetry true"
+hint = "ask Erik to reopen the tunnel"
+
+[paths]
+code = "/home/eschnetter/claude/studies"
+scratch = "/mnt/beegfs/eschnetter/claude/studies"
+
+[slurm]
+# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes. A cache compiled on
+# one kind may be rejected on another; the job's check before its runs then
+# stops it.
+node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
+default_queue = "amddebugq"            # starts much sooner than amdq
+queues = [
+  { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1 },
+  { partition = "amdq",      max_time = "24:00:00", max_nodes = 16 },
+]
+
+[slurm.gpu]                            # H200, 141 GB
+request = "--gres=gpu:h200:%d"
+cores = 8                              # per GPU; more often blocks on the group's limits
+mem = "64G"                            # per GPU; always given, the default is 21 GB per core
+max = 8
+default_queue = "h200debugq"           # once, to get started; never chained
+queues = [
+  { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2 },
+  { partition = "h200q",      max_time = "24:00:00" },
+]
+
+[julia]
+bin = "~/.juliaup/bin/julia"
+modules = []
+precompile_on = "compute"              # the login node is Intel, the compute nodes are AMD
+precompile_time = "0:30:00"
+compute_internet = true

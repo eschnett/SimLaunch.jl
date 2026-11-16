@@ -16,6 +16,10 @@ struct Job
     project::String                   # relative to the study's src/
     time::Union{Int,Nothing}          # seconds
     nodes::Int
+    gpus::Int                         # 0: a CPU job
+    cores::Int                        # of the allocation
+    env::String                       # "default", or a kind of ENV_KINDS
+    envdir::String                    # the runs' environment, relative to the study's directory
     mode::Symbol                      # :sequential or :parallel
     blas_threads::Int
     pin::Bool
@@ -29,6 +33,19 @@ const SITE_KEYS = ["time", "resources", "mode", "threads", "pin", "env", "blas_t
                    "julia_args", "vars", "queue"]
 const TOP_KEYS = ["name", "project", "site", "checkpoints", "run"]
 const RUN_KEYS = ["label", "cmd", "threads", "julia_args", "vars"]
+
+"""
+The environments `prepare` can write beside the project: the packages they
+add, and the Julia code that fetches what a package downloads at first use.
+"""
+const ENV_KINDS = Dict("cuda" => (packages = ["CUDA"], warm = "using CUDA; CUDA.versioninfo()"),
+                       "metal" => (packages = ["Metal"], warm = "using Metal; Metal.versioninfo()"))
+
+"A job's environment, relative to the study's directory. `own` is the study's own project."
+function env_dir(project, env, own)
+    env == "default" && return joinpath("src", project)
+    return joinpath("envs", project == own ? "default-$env" : "default-$env-" * replace(project, r"[^A-Za-z0-9_.-]" => "-"))
+end
 
 # Fields of the design that later milestones implement.
 const LATER_KEYS = Dict("variant" => 3, "ranks" => 3, "nodes" => 3, "placement" => 3, "mpi" => 3,
@@ -89,19 +106,35 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     get(spec, "checkpoints", false) == false ||
         fail("$file: `checkpoints = true` is not implemented yet (milestone 3)")
     env = setting("env", "default")
-    env == "default" || fail("$file: the environment `$env` is not implemented yet (milestone 2); only \"default\"")
+    env == "default" || haskey(ENV_KINDS, env) ||
+        fail("$file: no environment `$env`; the environments are \"default\", ",
+             join(repr.(sort!(collect(keys(ENV_KINDS)))), ", "), " (others come with milestone 3)")
 
-    # resources
+    # resources: nodes, or GPUs
     resources = setting("resources", Dict{String,Any}("nodes" => 1))
-    resources isa AbstractDict || fail("$file: `resources` must be a table such as { nodes = 1 }")
+    resources isa AbstractDict || fail("$file: `resources` must be a table such as { nodes = 1 } or { gpus = 1 }")
     for key in keys(resources)
-        key == "gpus" && fail("$file: GPU jobs are not implemented yet (milestone 2)")
-        key == "nodes" || fail("$file: `resources.$key` is not implemented yet; only `nodes`")
+        key in ("nodes", "gpus") || fail("$file: `resources.$key` is not implemented yet; only `nodes` and `gpus`")
     end
+    gpus = get(resources, "gpus", 0)
+    gpus isa Integer && gpus >= 0 || fail("$file: `resources.gpus` must be a number of GPUs")
+    gpus > 0 && haskey(resources, "nodes") && resources["nodes"] != 1 &&
+        fail("$file: `resources` names nodes or GPUs, not both")
     nodes = get(resources, "nodes", 1)
     nodes isa Integer && nodes >= 1 || fail("$file: `resources.nodes` must be a positive integer")
     nodes == 1 || fail("$file: jobs on several nodes need the MPI recipes, which are not implemented yet (milestone 3)")
-    cores = site.cores
+    if gpus > 0
+        g = site.gpu
+        g === nothing && fail("$file asks for GPUs, but site $(site.name) has none in its profile")
+        g.max !== nothing && gpus > g.max &&
+            fail("$file asks for $gpus GPUs, but a job on $(site.name) gets at most $(g.max)")
+        cores = gpus * g.cores
+    else
+        site.cores > 0 || fail("site $(site.name) runs GPU jobs only; give `resources = { gpus = 1 }` in [site.$(site.name)]")
+        cores = site.cores
+    end
+    what = gpus > 0 ? "the $gpus GPU$(gpus == 1 ? "" : "s") of this job on $(site.name) come$(gpus == 1 ? "s" : "") with" :
+                      "a node of $(site.name) has"
 
     mode = setting("mode", "sequential")
     mode in ("sequential", "parallel") || fail("$file: `mode` is \"sequential\" or \"parallel\", not $(repr(mode))")
@@ -110,6 +143,7 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     pin isa Bool || fail("$file: `pin` is true or false")
     pin && mode === :parallel && fail("$file: pinned runs side by side need placement, which is not implemented yet (milestone 3)")
     pin && !site.slurm && fail("$file: `pin = true` needs a Slurm site; $(site.name) cannot pin threads")
+    pin && gpus > 0 && fail("$file: `pin = true` is for CPU jobs")
     blas_threads = setting("blas_threads", 1)
     blas_threads isa Integer && blas_threads >= 1 || fail("$file: `blas_threads` must be a positive integer")
 
@@ -119,13 +153,22 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         fail("$file gives no `time` for site $(site.name); add it to [site.$(site.name)]")
     seconds = time === nothing ? nothing : parse_time(time)
     chosen = nothing
-    if site.slurm
-        queue_name = something(queue, setting("queue", nothing), site.default_queue, Some(nothing))
+    if site.slurm && !site.partition
+        something(queue, setting("queue", nothing), Some(nothing)) === nothing ||
+            fail("site $(site.name) chooses the partition itself; give no queue")
+        site.max_time !== nothing && seconds > site.max_time &&
+            fail("$file asks for $(time_string(seconds)), but $(site.name) allows at most $(time_string(site.max_time))")
+    elseif site.slurm
+        queues = gpus > 0 ? site.gpu.queues : site.queues
+        default = gpus > 0 ? site.gpu.default_queue : site.default_queue
+        queue_name = something(queue, setting("queue", nothing), default, Some(nothing))
         queue_name === nothing && fail("site $(site.name) has no default queue; give one with --queue")
-        i = findfirst(qu -> qu.partition == queue_name, site.queues)
-        i === nothing && fail("site $(site.name) has no queue $(repr(queue_name)); its queues: ",
-                              join([qu.partition for qu in site.queues], ", "))
-        chosen = site.queues[i]
+        i = findfirst(qu -> qu.partition == queue_name, queues)
+        i === nothing && fail("site $(site.name) has no queue $(repr(queue_name)) for $(gpus > 0 ? "GPU" : "CPU") jobs; its queues: ",
+                              join([qu.partition for qu in queues], ", "))
+        chosen = queues[i]
+        chosen.max_gpus !== nothing && gpus > chosen.max_gpus &&
+            fail("$file asks for $gpus GPUs, but queue $(chosen.partition) on $(site.name) allows at most $(chosen.max_gpus)")
         chosen.max_time !== nothing && seconds > chosen.max_time &&
             fail("$file asks for $(time_string(seconds)), but queue $(chosen.partition) on $(site.name) allows at most $(time_string(chosen.max_time))")
         chosen.min_time !== nothing && seconds < chosen.min_time &&
@@ -171,19 +214,21 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     # does the allocation hold it?
     for r in runs
         r.threads <= cores ||
-            fail("$file: run $(r.label) asks for $(r.threads) threads, but a node of $(site.name) has $cores cores")
+            fail("$file: run $(r.label) asks for $(r.threads) threads, but $what $cores cores")
     end
     if mode === :parallel
         total = sum(r.threads for r in runs)
         total <= cores ||
-            fail("$file: $(length(runs)) runs side by side ask for $total threads, but a node of $(site.name) has $cores cores; ",
+            fail("$file: $(length(runs)) runs side by side ask for $total threads, but $what $cores cores; ",
                  "lower `threads` or use `mode = \"sequential\"` in [site.$(site.name)]")
     end
 
+    own = project
     project = get(spec, "project", project)
     project isa AbstractString && !isabspath(project) && !occursin("..", project) ||
         fail("$file: `project` is a path relative to the study's src/")
-    return Job(name, study, site, project, seconds, nodes, mode, blas_threads, pin, chosen, runs)
+    return Job(name, study, site, project, seconds, nodes, gpus, cores, env, env_dir(project, env, own),
+               mode, blas_threads, pin, chosen, runs)
 end
 
 function load_spec(file::AbstractString)
@@ -196,5 +241,18 @@ function load_spec(file::AbstractString)
     end
 end
 
-"The combinations of project and Julia flags a job needs precompiled."
-combos(job::Job) = unique!([(job.project, join(r.julia_args, " ")) for r in job.runs])
+"""
+What `prepare` makes and `submit` asks for: an environment, precompiled with
+these Julia flags on this kind of node.
+"""
+struct Combo
+    project::String                   # relative to the study's src/
+    env::String
+    envdir::String                    # relative to the study's directory
+    args::String                      # the Julia flags, joined
+    gpu::Bool                         # for the GPU nodes of a site that precompiles on compute nodes
+end
+
+"The combinations a job needs."
+combos(job::Job) = unique!([Combo(job.project, job.env, job.envdir, join(r.julia_args, " "), job.gpus > 0)
+                            for r in job.runs])

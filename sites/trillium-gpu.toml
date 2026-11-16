@@ -1,0 +1,40 @@
+# Trillium's GPU cluster (Alliance / SciNet): a Slurm cluster of its own,
+# with its own login node. Facts from the trillium-hpc skill, checked on the
+# cluster on 2026-11-15.
+name = "trillium-gpu"
+
+[connect]
+host = "trillium"                      # files go here: both clusters see the same file systems
+via = "trig-login01"                   # commands run here, reached from a tri-login node
+check = "ssh -O check trillium"        # MFA: never open a new connection
+hint = "run: ssh -fN trillium"
+
+[paths]
+# not the CPU cluster's directories: the two prepare for different CPUs
+code = "/home/eschnett/claude/studies-gpu"          # read-only in jobs
+scratch = "/scratch/eschnett/claude/studies-gpu"
+
+[slurm]
+account = "def-eschnett"
+export_env = false                     # sbatch runs with --export=NONE
+
+[slurm.gpu]                            # H100, 80 GB
+request = "--gpus-per-node=%d"
+cores = 24                             # per GPU, with 192000 M; given, not asked for
+request_cores = false
+max = 4
+default_queue = "compute"
+queues = [
+  { partition = "debug",   max_time = "2:00:00" },   # one job at a time
+  { partition = "compute", max_time = "24:00:00" },
+]
+
+[julia]
+bin = "~/.juliaup/bin/julia"
+modules = []
+precompile_on = "login"                # trig-login01 is Zen 4 with H100s, like the compute nodes
+precompile_tasks = 8                   # login nodes are shared
+compute_internet = false               # prepare fetches everything; jobs run offline
+
+[env]
+JULIA_PKG_OFFLINE = "true"

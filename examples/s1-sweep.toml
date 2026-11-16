@@ -10,6 +10,18 @@ resources = { nodes = 1 }
 mode = "parallel"
 threads = 32
 
+[site.nibi]                         # the same node size
+time = "3:00:00"
+resources = { nodes = 1 }
+mode = "parallel"
+threads = 32
+
+[site.fir]                          # the same node size
+time = "3:00:00"
+resources = { nodes = 1 }
+mode = "parallel"
+threads = 32
+
 [site.local]                        # the laptop: one run after another; with 36 GB
 mode = "sequential"                 # only p6 fits (--run p6)
 

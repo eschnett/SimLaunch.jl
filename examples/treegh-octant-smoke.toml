@@ -1,0 +1,22 @@
+# A smoke row of TreeGeneralizedHarmonic's octant runs on one GPU: the
+# command of its CLAUDE.md ("out/smoke") with backend=cuda.
+name = "octant-smoke"
+
+[site.trillium-gpu]                 # one H100
+time = "0:30:00"
+resources = { gpus = 1 }
+env = "cuda"
+
+[site.symmetry]                     # one H200
+time = "0:30:00"
+resources = { gpus = 1 }
+env = "cuda"
+
+[site.fir]                          # one H100
+time = "0:30:00"
+resources = { gpus = 1 }
+env = "cuda"
+
+[[run]]
+label = "ks"
+cmd = "test/octant_runs.jl backend=cuda case=ks interior=fitted L=8 N=16 roots=2 radii=4,2 t_end=1 chunk=1/2 cfl=1/2 amplitude=0 out=out/smoke"

@@ -24,7 +24,7 @@ Keep the tables of contents current.
 ## Commands
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.test()'            # about 20 s, runs local jobs
+julia --project=. -e 'using Pkg; Pkg.test()'            # about 30 s, runs local jobs
 SIMLAUNCH_UPDATE_REFERENCE=1 julia --project=. -e 'using Pkg; Pkg.test()'
                                                         # rewrite test/reference/*.sh
 julia --project=. -m SimLaunch submit <study> <spec> --site trillium --dry-run
@@ -35,8 +35,14 @@ profile directory; the tests use both.
 
 ## Conventions and sharp edges
 
-- A changed generated script changes `test/reference/trillium-hello.sh`:
-  regenerate it and read the diff.
+- A changed generated script changes `test/reference/*.sh`, one per site:
+  regenerate them and read the diff.
+- The tests run a Slurm site on the laptop: the profile `cluster` in
+  `test/runtests.jl`, with `test/fakeslurm/sbatch` and `squeue` on the
+  `PATH`. It covers the precompile job, its lock and a GPU job's header, not
+  a real queue.
+- An environment kind (`ENV_KINDS` in `src/spec.jl`) names the packages
+  `templates/make_env.jl` adds. A new kind is a line there.
 - Generated scripts are plain bash that must run without SimLaunch. The
   shared part is `templates/job_helpers.sh`.
 - Manifests are never copied to a site, and nothing that depends on cores,

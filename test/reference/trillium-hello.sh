@@ -17,6 +17,7 @@ STUDY=toy
 SPEC=hello
 SITE=trillium
 PROJECT=/home/eschnett/claude/studies/toy/src/Toy
+ENVDIR=/home/eschnett/claude/studies/toy/src/Toy      # the runs' environment
 TOOLS=/home/eschnett/claude/studies/toy/tools
 SCRATCH=/scratch/eschnett/claude/studies/toy
 JULIA="$HOME"/.juliaup/bin/julia
@@ -104,7 +105,8 @@ sw_queued() {
 new_job_dir() {
     local dir n
     dir=$(run_dir "$1")
-    n=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' | wc -l)
+    # the run's directory may not exist yet: a job can start before it is marked queued
+    n=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' 2>/dev/null | wc -l)
     printf '%s/%03d-%s\n' "$dir" $((n + 1)) "$JOBID"
 }
 
@@ -215,17 +217,17 @@ for i in "${!LABELS[@]}"; do
     mkdir -p "${JOBDIRS[$i]}" || exit 1
 done
 
-# The project must be precompiled for this Julia and these flags:
+# The environment must be precompiled for this Julia and these flags:
 # a job compiles nothing.
-"$JULIA" --startup-file=no --project="$PROJECT" "$TOOLS"/check_precompiled.jl || exit 3
-"$JULIA" --check-bounds=yes --startup-file=no --project="$PROJECT" "$TOOLS"/check_precompiled.jl || exit 3
+"$JULIA" --startup-file=no --project="$ENVDIR" "$TOOLS"/check_precompiled.jl || exit 3
+"$JULIA" --check-bounds=yes --startup-file=no --project="$ENVDIR" "$TOOLS"/check_precompiled.jl || exit 3
 
 # The runs. Each starts in its own job directory, with its output in output.log.
 run_0() {   # n3
-    exec env TOYVAR='a b' "$JULIA" -t 32 --project="$PROJECT" "$PROJECT"/examples/hello.jl n=3
+    exec env TOYVAR='a b' "$JULIA" -t 32 --project="$ENVDIR" "$PROJECT"/examples/hello.jl n=3
 }
 run_1() {   # n5
-    exec "$JULIA" -t 32 --check-bounds=yes --project="$PROJECT" "$PROJECT"/examples/hello.jl n=5
+    exec "$JULIA" -t 32 --check-bounds=yes --project="$ENVDIR" "$PROJECT"/examples/hello.jl n=5
 }
 
 # All runs side by side.

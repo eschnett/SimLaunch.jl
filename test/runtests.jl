@@ -1,6 +1,6 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
-                 prepare, submit, study_scratch
+                 prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions
 using Test
 using TOML
 
@@ -96,10 +96,38 @@ end
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
           registry_update = false
           """)
-    cp(joinpath(pkgdir(SimLaunch), "sites", "trillium.toml"), joinpath(sites, "trillium.toml"))
+    for name in ("trillium", "trillium-gpu", "symmetry", "nibi")
+        cp(joinpath(pkgdir(SimLaunch), "sites", "$name.toml"), joinpath(sites, "$name.toml"))
+    end
+    # a Slurm site on this machine, with the stand-ins of test/fakeslurm for sbatch and squeue
+    write(joinpath(sites, "cluster.toml"), """
+          name = "cluster"
+          [paths]
+          code = "$(joinpath(root, "cluster", "code"))"
+          scratch = "$(joinpath(root, "cluster", "scratch"))"
+          [slurm]
+          node = { cores = 4, header = ["--exclusive"] }
+          default_queue = "cpuq"
+          queues = [{ partition = "cpuq", max_time = "1:00:00" }]
+          [slurm.gpu]
+          request = "--gres=gpu:%d"
+          cores = 2
+          mem = "8G"
+          max = 2
+          default_queue = "gpuq"
+          queues = [{ partition = "gpuq", max_time = "1:00:00", max_gpus = 1 }]
+          [julia]
+          bin = "$(joinpath(Sys.BINDIR, "julia"))"
+          registry_update = false
+          precompile_on = "compute"
+          """)
+    # an environment kind that needs no network: the project and a standard library
+    SimLaunch.ENV_KINDS["dates"] = (packages = ["Dates"], warm = "using Dates; println(\"warm: \", Dates.today())")
     spec(text) = (f = tempname(root) * ".toml"; write(f, text); f)
 
-    withenv("SIMLAUNCH_CACHE" => joinpath(root, "cache"), "SIMLAUNCH_SITES" => sites) do
+    withenv("SIMLAUNCH_CACHE" => joinpath(root, "cache"), "SIMLAUNCH_SITES" => sites,
+            "FAKESLURM" => joinpath(root, "fakeslurm"),
+            "PATH" => joinpath(@__DIR__, "fakeslurm") * ":" * ENV["PATH"]) do
         @testset "time limits" begin
             @test parse_time("3:00:00") == 10800
             @test parse_time("1-00:00:00") == 86400
@@ -169,6 +197,61 @@ end
             @test success(`bash -n $reference`)
         end
 
+        gpu_spec = """
+            name = "gpu"
+            [site.symmetry]
+            time = "0:30:00"
+            resources = { gpus = 1 }
+            env = "cuda"
+            [site.trillium-gpu]
+            time = "1:00:00"
+            resources = { gpus = 2 }
+            env = "cuda"
+            [site.nibi]
+            time = "3:00:00"
+            mode = "parallel"
+            threads = 32
+            [[run]]
+            label = "n3"
+            cmd = "examples/hello.jl n=3"
+            """
+        @testset "the other sites" begin
+            job(site; text = gpu_spec, kw...) =
+                resolve(load_spec(spec(text)), load_site(site); study = "toy", project = "Toy", kw...)
+            j = job("symmetry")
+            @test j.gpus == 1 && j.cores == 8 && j.queue.partition == "h200debugq" && j.runs[1].threads == 8
+            @test j.envdir == "envs/default-cuda"
+            @test combo_line(only(combos(j))) == "envs/default-cuda\t\tgpu"
+            j = job("trillium-gpu")
+            @test j.gpus == 2 && j.cores == 48 && j.queue.partition == "compute"
+            j = job("nibi")
+            @test j.gpus == 0 && j.queue === nothing && j.envdir == "src/Toy"
+            @test combo_line(only(combos(j))) == "Toy"
+            for (site, name) in (("symmetry", "symmetry-gpu"), ("trillium-gpu", "trillium-gpu"), ("nibi", "nibi-hello"))
+                script = generate(job(site))
+                reference = joinpath(@__DIR__, "reference", "$name.sh")
+                get(ENV, "SIMLAUNCH_UPDATE_REFERENCE", "") == "1" && write(reference, script)
+                @test script == read(reference, String)
+                @test success(`bash -n $reference`)
+            end
+            # refusals
+            @test_throws "at most 2" job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3"))
+            @test_throws "at most 4" job("trillium-gpu"; text = replace(gpu_spec, "gpus = 2" => "gpus = 5"))
+            @test_throws "at most 1:00:00" job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"))
+            @test job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200q").time == 7200
+            @test_throws "for GPU jobs" job("symmetry"; queue = "amdq")
+            @test_throws "GPU jobs only" job("trillium-gpu"; text = replace(gpu_spec, "resources = { gpus = 2 }" => ""))
+            @test_throws "has none" job("trillium"; text = replace(gpu_spec, "site.nibi" => "site.trillium",
+                                                                    "mode = \"parallel\"" => "resources = { gpus = 1 }"))
+            @test_throws "chooses the partition" job("nibi"; queue = "cpubase")
+            @test_throws "at most 168:00:00" job("nibi"; text = replace(gpu_spec, "3:00:00" => "8-00:00:00"))
+            @test_throws "no environment" job("symmetry"; text = replace(gpu_spec, "\"cuda\"" => "\"opencl\""))
+            # the second login node is reached through the first
+            cmd = SimLaunch.sitecmd(load_site("trillium-gpu"), "echo 'a b'")
+            @test cmd.exec[1:2] == ["ssh", "trillium"] && startswith(cmd.exec[3], "ssh trig-login01 ")
+            @test readchomp(`bash -c $(replace(cmd.exec[3], "ssh trig-login01" => "eval"))`) == "a b"
+        end
+
         scratch = study_scratch(load_site("local"), "toy")
         @testset "prepare and submit, local" begin
             f = spec(spec_text(RUNS))
@@ -228,6 +311,65 @@ end
             log = read(joinpath(scratch, "logs", "hello-$jobid.out"), String)
             @test occursin("=== output of bad", log) && occursin("ended with exit code", log)
         end
+
+        @testset "a site that precompiles in a job, and an environment" begin
+            cluster = load_site("cluster")
+            cscratch, ccode = study_scratch(cluster, "toy"), study_code(cluster, "toy")
+            f = spec("""
+                     name = "dev"
+                     [site.cluster]
+                     time = "0:10:00"
+                     resources = { gpus = 1 }
+                     env = "dates"
+                     [site.local]
+                     env = "dates"
+                     [[run]]
+                     label = "n4"
+                     cmd = "examples/hello.jl n=4"
+                     """)
+            @test_throws "not prepared" submit("toy", f; site = "cluster", io = devnull)
+            # a lock left by a job that has ended is taken over
+            mkpath(lock_dir(cluster)); write(joinpath(lock_dir(cluster), "jobid"), "999\n")
+            out = IOBuffer()
+            needed = redirect_stdout(devnull) do
+                prepare("toy"; site = "cluster", specs = [f], poll = 0.5, io = out)
+            end
+            @test combo_line.(needed) == ["envs/default-dates\t\tgpu"]
+            @test !ispath(lock_dir(cluster))                                     # given back by the job
+            @test readlines(joinpath(ccode, "prepared")) == ["envs/default-dates\t\tgpu"]
+            env = TOML.parsefile(joinpath(ccode, "envs", "default-dates", "Project.toml"))
+            @test issubset(["Toy", "ToyDep", "Dates"], keys(env["deps"]))
+            @test env["sources"]["ToyDep"]["path"] == joinpath(ccode, "src", "ToyDep")
+            @test !ispath(joinpath(ccode, "src", "Toy", "Manifest.toml"))        # the project itself is untouched
+            log = only(filter(startswith("precompile-"), readdir(joinpath(cscratch, "logs"))))
+            @test occursin("warm: ", read(joinpath(cscratch, "logs", log), String))
+            # prepared already: no second job
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "cluster", specs = [f], poll = 0.5, io = devnull)
+            end
+            @test length(filter(startswith("precompile-"), readdir(joinpath(cscratch, "logs")))) == 1
+
+            jobid = submit("toy", f; site = "cluster", io = devnull)
+            n4, = wait_for(cscratch, ["dev-n4"])
+            @test n4["status"] == "finished" && n4["slurm"]["job_id"] == jobid
+            @test occursin("answer = 9, threads = 2", read(joinpath(cscratch, "dev-n4", "001-$jobid", "output.log"), String))
+
+            # the same environment on a second site, and the report of what the two resolved
+            out = IOBuffer()
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [f], io = out)
+            end
+            @test occursin("local and cluster resolved the same versions", String(take!(out)))
+            versions = manifest_versions(joinpath(ENV["SIMLAUNCH_CACHE"], ".sites", "toy", "local", "envs--default-dates.toml"))
+            @test versions["julia"] == string(VERSION) && versions["Toy"] == "the study's sources"
+            other = joinpath(ENV["SIMLAUNCH_CACHE"], ".sites", "toy", "cluster", "envs--default-dates.toml")
+            write(other, replace(read(other, String), "julia_version = \"$VERSION\"" => "julia_version = \"1.0.0\""))
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [f], io = out)
+            end
+            @test occursin(r"julia\s+\S+\s+cluster: 1\.0\.0", String(take!(out)))
+        end
     end
     run(`chmod -R u+w $root`)
+    delete!(SimLaunch.ENV_KINDS, "dates")
 end

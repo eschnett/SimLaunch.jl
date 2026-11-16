@@ -73,7 +73,8 @@ sw_queued() {
 new_job_dir() {
     local dir n
     dir=$(run_dir "$1")
-    n=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' | wc -l)
+    # the run's directory may not exist yet: a job can start before it is marked queued
+    n=$(find "$dir" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]-*' 2>/dev/null | wc -l)
     printf '%s/%03d-%s\n' "$dir" $((n + 1)) "$JOBID"
 }
 
