@@ -21,7 +21,7 @@ the batch script from a short job spec and a site profile, and submits it with
 
 In development. Jobs on one node or one GPU have run on four clusters.
 Restart chains, MPI and the commands that follow a job (`status`, `fetch`,
-`clean`) are implemented but have run on the laptop only.
+`wait`) have run on one cluster, with a toy project.
 [What has run where](#what-has-run-where) has the details.
 
 ## Installation
@@ -118,7 +118,9 @@ The queue is the first in the site's profile that fits the job; `--queue`
 names another. On Trillium that is `debug` for a job of up to an hour while
 no other job of yours is there, and `compute` otherwise.
 
-Further fields, each described in [`PLAN.md`](PLAN.md):
+[`SPEC.md`](SPEC.md) is the reference for every key, and
+[`CONVERTING.md`](CONVERTING.md) the way from a hand-written batch script to
+a spec. Further fields, in short:
 
 | Field | Meaning |
 | --- | --- |
@@ -138,11 +140,18 @@ them.
 ## After a job
 
 ```bash
+simlaunch wait s1 jobs/s1-sweep.toml --site trillium   # until its jobs have ended; fails unless all runs finished
 simlaunch status s1                 # one table of the study's runs on all its sites
 simlaunch fetch s1                  # results into <project>/.claude/data/s1/<site>/
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
 simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
 ```
+
+`submit --wait` submits and then waits in the same way, on the laptop and
+on a cluster; that is also how a spec runs in CI
+([`CONVERTING.md`](CONVERTING.md), "In CI"). Waiting only watches: when it
+is interrupted, or the connection drops, the jobs go on, and `wait` can be
+started again.
 
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
 `--with-checkpoints` and `--max-size` change that. `clean` refuses while a
@@ -198,7 +207,10 @@ Milestones 1 to 3 of the plan's four are implemented.
   - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
     `cuda` environment.
   - `symmetry`: the same row on one H200, after a precompile job on an H200
-    node.
+    node; TreeWaveOLDG's thread scan on an AMD node; and, with a toy
+    project, a chain of three jobs, `check-restart`, a stopped job that
+    submits its successor, and MPI ranks on one and two nodes under three
+    recipes, each rank on its NUMA domain.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
 - Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
   `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
@@ -206,7 +218,7 @@ Milestones 1 to 3 of the plan's four are implemented.
   that submits its successor, and `check-restart`.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
   ranks under MPICH_jll's `mpiexec`.
-- Read only, never run: scripts with `srun` launchers, `numactl` placement,
-  several nodes, or a site's own MPI.
+- Not yet run with a real code: restart chains and MPI. A real pre-emption
+  has not happened, only its signal. Trillium's MPI recipes are untried.
 - Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
   refused for; the memory part of the resource check; `--snapshot-pins`.

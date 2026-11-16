@@ -1,7 +1,7 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
                  prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions,
-                 resubmit, status, fetch, usage, clean, combine, check_restart
+                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec
 using Test
 using TOML
 
@@ -151,7 +151,7 @@ end
           scratch = "$(joinpath(root, "cluster", "scratch"))"
           [slurm]
           node = { cores = 4, header = ["--exclusive"] }
-          queues = [{ partition = "cpuq", max_time = "1:00:00" }, { partition = "preq", max_time = "1:00:00", preempt = true }]
+          queues = [{ partition = "cpuq", max_time = "1:00:00" }, { partition = "preq", max_time = "1:00:00", preempt = true, prefer = true }]
           [slurm.gpu]
           request = "--gres=gpu:%d"
           cores = 2
@@ -364,6 +364,24 @@ end
             @test occursin("=== output of bad", log) && occursin("ended with exit code", log)
         end
 
+        @testset "wait" begin
+            good = spec(replace(spec_text(RUNS), "name = \"hello\"" => "name = \"w\""))
+            @test_throws "no job of spec w" wait_spec("toy", good; site = "local", poll = 0.3, io = devnull)
+            submit("toy", good; site = "local", io = devnull)
+            out = IOBuffer()
+            @test wait_spec("toy", good; site = "local", poll = 0.3, io = out)
+            text = String(take!(out))
+            @test occursin(r"w-n3\s+finished", text) && occursin("all 2 runs have finished", text)
+            bad = spec(replace(spec_text("[[run]]\nlabel = \"bad\"\ncmd = \"examples/hello.jl n=1 fail\"\nthreads = 1\n"),
+                               "name = \"hello\"" => "name = \"wbad\""))
+            submit("toy", bad; site = "local", io = devnull)
+            @test !wait_spec("toy", bad; site = "local", poll = 0.3, io = out)
+            text = String(take!(out))
+            @test occursin("exit code 7", text) && occursin("answer = 3", text)      # with the end of its output
+            # from the command line: the exit code says whether the runs finished
+            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--poll", "0.3"]) == 1
+        end
+
         @testset "a site that precompiles in a job, and an environment" begin
             cluster = load_site("cluster")
             cscratch, ccode = study_scratch(cluster, "toy"), study_code(cluster, "toy")
@@ -502,7 +520,10 @@ end
             @test j.queue.partition == "amdq" && j.nodes == 2 && j.tasks == 8         # two nodes: not amddebugq
             @test [r.envdir for r in j.runs] == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
             @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
-            @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
+            # the marker of what is prepared names the CPU target of a site with several CPU types
+            @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"] .*
+                                            "\t\t\tgeneric;znver2,clone_all;znver4,clone_all"
+            @test occursin("export JULIA_CPU_TARGET='generic;znver2,clone_all;znver4,clone_all'", generate(j))
             prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
             @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)
             @test occursin("set_mpi.jl system", prep) && occursin("module load nvhpc-hpcx-cuda12/24.9", prep)
@@ -560,7 +581,9 @@ end
             @test_throws "queued or running" submit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
             queued = TOML.parsefile(joinpath(cscratch, "chain-c", "simwatch.toml"))
             @test queued["status"] in ("queued", "running")
-            while !isempty(SimLaunch.active_jobs(cluster, "toy", "chain")); sleep(0.5); end
+            out = IOBuffer()
+            @test wait_spec("toy", short; site = "cluster", poll = 0.5, io = out)     # the whole chain
+            @test occursin(r"chain-c\s+finished", String(take!(out)))
             run_dir = joinpath(cscratch, "chain-c")
             st = TOML.parsefile(joinpath(run_dir, "simwatch.toml"))
             @test st["status"] == "finished" && st["slurm"]["previous_job_ids"] == [ids[1]]

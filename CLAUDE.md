@@ -14,6 +14,10 @@ it is the design, its reasons and the plan.
 Which file new content goes in:
 
 - `README.md`: for users. What it does, installation, an example, the status.
+- `SPEC.md`: for users. The reference for every key of a job spec. A new or
+  changed key is described there.
+- `CONVERTING.md`: for another project's maintainer or agent. How a
+  hand-written batch script becomes a spec, and what does not carry over.
 - `CLAUDE.md`: this file. Commands, rules, repository facts. Keep it short.
 - `PLAN.md`: the design, its reasons and the milestones, with what has run
   where. `CODE.md` (the current design) and `HISTORY.md` are split off from

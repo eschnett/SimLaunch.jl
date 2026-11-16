@@ -356,6 +356,10 @@ flags.
    dependencies. A suite job runs `test/runtests.jl` in the prepared `test`
    environment, not `Pkg.test`, whose sandbox resolves and precompiles when
    the job runs.
+   Where a site's nodes are several CPU types under one partition, as
+   Symmetry's AMD nodes, the profile's `cpu_target` makes one cache serve
+   them all (`JULIA_CPU_TARGET`, set for the precompile job and for every
+   job).
 4. **Precompile where the profile says**, once for every combination of
    environment, Julia version and Julia flags the specs name, since
    `--check-bounds=yes` has its own cache. On Trillium, on the login node of
@@ -567,8 +571,10 @@ environment, so they differ in the package only.
 **Queue choice.** The tool picks the first queue in the profile's order that
 fits the spec: its time, its nodes or GPUs, and three rules a queue can
 carry. `one_at_a_time`: skipped while the user has a job there, which
-`submit` asks the site; `preempt`: only for a job with checkpoints, and
-preferred by one; `chain = false`: not for a job with checkpoints. The
+`submit` asks the site; `preempt`: only for a job with checkpoints;
+`prefer`: taken first by a job with checkpoints (`h200preq`, since `h200q`
+is often full; not `amdpreq`); `chain = false`: not for a job with
+checkpoints. The
 result:
 
 | Site | Fits in 1 h | Longer | GPU, no checkpoints | GPU with checkpoints |
@@ -596,6 +602,15 @@ one ssh call per site, and does not run `simwatch --print`, which would need
 SimWatch installed on every site. Erik's own view stays
 `simwatch <site>:<dir>`, which the tool prints at submission and with the
 table.
+
+**Wait.** `simlaunch wait <study> <spec>` watches until no job of the spec
+is queued or running, printing each run's status as it changes, and exits
+with 0 only when every run has finished; `submit --wait` is `submit` followed
+by it. It covers a chain, also a successor that a stopped job submits. It
+asks the queue over ssh and reads the runs' SimWatch files, since Slurm's
+own state does not tell a job whose run failed from one that finished. It
+holds no session open: interrupted, it is started again. This is also how a
+spec runs in a project's CI, as `--site local`.
 
 **Fetch** copies a run's results back to
 `.claude/data/<study>/<site>/<run>/` in the project the study came from:
@@ -940,10 +955,12 @@ and for clusters that are down.
    | Octant smoke row | Trillium, one H100 | 1342940 | finished |
    | Octant smoke row | Symmetry, one H200 | 599434 | finished, same values; precompile job 599432 |
    | TreeWaveOLDG thread scan, pinned | Trillium (for Symmetry) | 2869575 | 1 to 192 threads, `rhs` 40 times faster |
+   | The same scan | Symmetry, cn102 (EPYC 7543) | 599475 | 1 to 64 threads, `rhs` 0.375 s to 0.020 s at 32; precompile job 599473 |
 
-   Open: S1's sweep on Nibi, and the thread scan on Symmetry's CPU nodes,
-   when they are back. Not yet seen on a cluster: a version report that
-   lists differences, and a precompile lock that is held or stale.
+   Open: S1's sweep on Nibi, when it is back. Seen on Symmetry on
+   2026-11-16: a version report that lists a difference (ForwardDiff 1.5.0
+   there, 1.4.8 on Trillium). Not yet seen on a cluster: a precompile lock
+   that is held or stale.
 3. **Queue rules, status, fetch, restarts.** SimLaunch delivers the restart
    contract and `simlaunch check-restart`. Converting TreeGeneralizedHarmonic's
    three checkpointing drivers is a separate task in that repository, done
@@ -968,11 +985,42 @@ and for clusters that are down.
    | Variants, test dependencies, MPI ranks under MPICH_jll's `mpiexec` | a run on the laptop, 2 and 3 ranks, by hand |
    | `srun` launchers, `numactl` placement, several nodes, the site's MPI | the generated scripts only (`test/reference/symmetry-nested.sh`) |
 
-   Open, all of it on clusters: every item of the done-when list above.
-   Unverified cluster facts the scripts rely on: that `sbatch` works on
-   Symmetry's compute nodes (the successor of a pre-empted job), that
-   HPC-X's `mpiexec` runs on the AMD nodes, and that `numactl` is on the
-   compute nodes' `PATH`. Not implemented: a run's `julia` channel, the
+   Run on Symmetry's AMD nodes on 2026-11-16, with a toy project (a
+   counting driver that follows the restart contract, and an MPI hello that
+   prints each rank's host and cores):
+
+   | Run | Jobs | Result |
+   | --- | --- | --- |
+   | A chain of three jobs, `--chain 3`, `amddebugq` | 599478 to 599480 | the first stopped at its walltime after step 59, the second continued at 60 and finished, the third had nothing left to do |
+   | `check-restart`, `amddebugq` | 599490, 599493, 599494, 599496 | passed: the stopped job's directory unchanged, the comparison accepted |
+   | A job stopped on `amdpreq` (with `scancel`, as a pre-emption stops it) | 599500, 599502 | the stopped job submitted its successor from the compute node; that continued at step 17 and finished |
+   | MPI on one node: 8 ranks × 8 threads for two variants, 2 ranks, under `srun --mpi=pmi2`; HPC-X's `mpiexec`; MPICH_jll's `mpiexec` | 599489, 599497 | every rank on its own NUMA domain, each variant its own version |
+   | MPI on two nodes, `amdq`: 16 and 8 ranks under `srun`, 8 under HPC-X | 599491, 599498 | the ranks split evenly over cn095 and cn096, each on its domain |
+   | `wait`, `status`, `usage`, `fetch` | the same | as on the laptop |
+
+   What these runs found and fixed:
+
+   - **A cache from one AMD generation is rejected on another.** The first
+     precompile job ran on cn112 (EPYC 8534P) and the jobs on EPYC 7532
+     nodes, which stopped at their precompile check (599483, 599484). A
+     profile now names `cpu_target`, exported as `JULIA_CPU_TARGET` where
+     the caches are compiled and where they are used; the marker of what is
+     prepared records it. Symmetry's is
+     `generic;znver2,clone_all;znver4,clone_all`.
+   - **A file written on a compute node shows on the login node late.**
+     `prepare` found no marker right after precompile job 599476 had ended.
+     It now looks again for up to a minute.
+   - **Under an `mpiexec`, `SLURM_LOCALID` is the batch step's.** All ranks
+     were bound to domain 0. The placement now reads the rank from Open MPI
+     or Hydra there, and from `srun` only under `srun`.
+
+   Known and left: `srun` warns that a step's `--cpus-per-task` exceeds the
+   job's when a run has fewer ranks than the job's largest (the step runs);
+   under HPC-X's `mpiexec` Julia writes terminal title sequences into the
+   output.
+
+   Open: every item of the done-when list above. A real pre-emption has not
+   happened yet, only its signal. Not implemented: a run's `julia` channel, the
    memory part of the resource check, `--snapshot-pins`, `combine` on the
    laptop, and the removal of a snapshot from the laptop by `clean`.
 4. **Migration.** The tables above, one script at a time, each when a run of

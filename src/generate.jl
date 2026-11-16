@@ -106,7 +106,11 @@ function run_command(job::Job, r::Run)
     if r.placement == "numa"
         # rank i of the R on its node gets NUMA domain i·D/R: its cores and its memory
         rpn = max(r.ranks, 1) ÷ r.nodes
-        bind = "l=\${SLURM_LOCALID:-\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}}; d=\$(( l * $(site.numa) / $rpn )); " *
+        # which rank on its node this is: srun says so; under an mpiexec the batch step's SLURM_LOCALID (0) is
+        # inherited and says nothing, and Open MPI or Hydra do
+        srun = r.ranks > 0 && site.mpi[r.mpi].launcher == "srun"
+        id = srun ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
+        bind = "l=$id; d=\$(( l * $(site.numa) / $rpn )); " *
                "exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
         push!(words, "bash", "-c", q(bind), "numa")
     end
@@ -223,6 +227,8 @@ function generate(job::Job; script = "", successor = true)
     for (k, v) in sort!(collect(site.env))
         println(io, "export $k=$(q(v))")
     end
+    target = cpu_target(site, job.gpus > 0)
+    isempty(target) || println(io, "export JULIA_CPU_TARGET=$(q(target))     # as the caches were compiled")
     job.pin && println(io, "export JULIA_EXCLUSIVE=1")
     print(io, """
 

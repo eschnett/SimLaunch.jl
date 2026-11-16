@@ -12,13 +12,13 @@ code = "/home/eschnetter/claude/studies"
 scratch = "/mnt/beegfs/eschnetter/claude/studies"
 
 [slurm]
-# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes. A cache compiled on
-# one kind may be rejected on another; the job's check before its runs then
-# stops it.
+# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes: see cpu_target below.
 node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
 queues = [                             # in the order of preference: amddebugq starts much sooner
   { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1 },
   { partition = "amdq",      max_time = "24:00:00", max_nodes = 16 },
+  # stopped whenever the queues above need its node: SIGTERM, then SIGKILL after 30 s
+  { partition = "amdpreq",   max_time = "24:00:00", max_nodes = 8, preempt = true },
 ]
 
 [slurm.gpu]                            # H200, 141 GB
@@ -30,13 +30,17 @@ queues = [
   { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },   # to get started; never chained
   { partition = "h200q",      max_time = "24:00:00" },
   # no group limits, but stopped whenever h200q needs the GPUs: SIGTERM, then SIGKILL after 30 s
-  { partition = "h200preq",   max_time = "24:00:00", preempt = true },
+  # preferred by a job with checkpoints: h200q is often full
+  { partition = "h200preq",   max_time = "24:00:00", preempt = true, prefer = true },
 ]
 
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
 precompile_on = "compute"              # the login node is Intel, the compute nodes are AMD
+# One cache for the three AMD generations (EPYC 7532, 7543, 8534P): without
+# it, what cn112 compiles is rejected on a Zen 2 node (jobs 599483, 599484).
+cpu_target = "generic;znver2,clone_all;znver4,clone_all"
 precompile_time = "0:30:00"
 compute_internet = true
 

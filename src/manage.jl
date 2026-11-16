@@ -276,7 +276,7 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
             n=1; while [ -e "combined-\$n" ]; do n=\$((n + 1)); done
             mkdir "combined-\$n"; cd "combined-\$n"
             export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study))):
-            unset JULIA_LOAD_PATH JULIA_PROJECT
+            unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET
             $(shpath(s.julia_bin)) --startup-file=no --project=$(shpath(joinpath(code, r.envdir))) $(shpath(joinpath(code, "src", job.project, job.combine[1]))) $(join(q.(job.combine[2:end]), " ")) "\${dirs[@]}" > combine.log 2>&1 || { cat combine.log >&2; exit 1; }
             cd ..; chmod -R a-w "combined-\$n"; echo "\$PWD/combined-\$n"
             """
@@ -285,4 +285,62 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
         push!(written, out)
     end
     return written
+end
+
+"""
+    wait_spec(study, spec; site, only_runs = [], poll = 20) -> Bool
+
+Wait until no job of the spec is queued or running on the site, printing each
+run's status as it changes, and return whether every run has finished. This
+covers a chain of jobs, also a successor that a stopped job submits itself.
+It only watches: interrupted, it can be started again, and the jobs are not
+affected. A run that is not finished gets the end of its output printed.
+"""
+function wait_spec(study::AbstractString, spec::AbstractString; site::AbstractString, only_runs = String[],
+                   poll = 20, io::IO = stdout)
+    s = load_site(site)
+    job = only(load_jobs(study, s, [spec]; only_runs))
+    check_connection(s)
+    scratch = study_scratch(s, study)
+    runs = ["$(job.name)-$(r.label)" for r in job.runs]
+    function states()
+        files = Dict(run_files(s, study, "simwatch.toml"))
+        return map(runs) do run
+            t = try TOML.parse(get(files, run, "")) catch; Dict{String,Any}() end
+            (; run, status = get(t, "status", "not submitted"), message = get(t, "message", ""))
+        end
+    end
+    seen = Dict{String,String}()
+    report(now) = for st in now
+        get(seen, st.run, "") == st.status && continue
+        seen[st.run] = st.status
+        println(io, rpad(st.run, maximum(length, runs)), "  ", rpad(st.status, 8), "  ", st.message)
+    end
+    while true
+        active = active_jobs(s, study, job.name)
+        report(states())
+        isempty(active) && break
+        sleep(poll)
+    end
+    final = states()
+    report(final)
+    all(st -> st.status == "not submitted", final) &&
+        fail("no job of spec $(job.name) has been submitted on $(s.name); start it with `simlaunch submit`")
+    ok = true
+    for st in final
+        st.status == "finished" && continue
+        ok = false
+        why = st.status in ("queued", "running") ? "its job has ended without saying so" :
+              st.status == "stopped" ? "no job is left to continue it; `simlaunch resubmit` submits one" : st.message
+        println(io, "\n$(st.run) has not finished ($(st.status)): $why")
+        tail = readsite(s, "cd $(q(joinpath(scratch, st.run))) 2>/dev/null || exit 0; " *
+                           "d=\$(ls -d [0-9][0-9][0-9]-* mutable 2>/dev/null | tail -n 1); " *
+                           "if [ -s \"\$d/output.log\" ]; then echo \"--- the end of \$d/output.log ---\"; tail -n 20 \"\$d/output.log\"; " *
+                           "else id=\$(cut -d' ' -f1 .simlaunch-job 2>/dev/null); echo \"--- the run wrote nothing; the start of its job's log ---\"; " *
+                           "head -n 12 ../logs/$(job.name)-\$id.out 2>/dev/null; fi; true")
+        print(io, tail)
+    end
+    println(io, ok ? "all $(length(runs)) run$(length(runs) == 1 ? " has" : "s have") finished" :
+                     "not all runs have finished; job logs are in $(joinpath(scratch, "logs"))")
+    return ok
 end

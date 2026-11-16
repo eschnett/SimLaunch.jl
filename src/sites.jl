@@ -8,6 +8,7 @@ struct Queue
     max_gpus::Union{Int,Nothing}
     one_at_a_time::Bool               # a second job of the same user is refused
     preempt::Bool                     # its jobs can be stopped at any time: only for jobs with checkpoints
+    prefer::Bool                      # a pre-emptible queue that a job with checkpoints takes first
     chain::Bool                       # false: not for a chain of jobs
 end
 
@@ -33,6 +34,7 @@ struct GPUs
     max::Union{Int,Nothing}           # per job
     queues::Vector{Queue}             # in the order of preference
     precompile_on::Union{String,Nothing}   # where the site's GPU nodes differ from its CPU nodes
+    cpu_target::Union{String,Nothing}      # JULIA_CPU_TARGET on the GPU nodes
 end
 
 struct Site
@@ -60,6 +62,7 @@ struct Site
     modules::Vector{String}
     precompile_on::String
     precompile_tasks::Union{Int,Nothing}
+    cpu_target::Union{String,Nothing} # JULIA_CPU_TARGET: one cache for a site whose nodes are several CPU types
     precompile_time::Int              # seconds, for a precompile job on a compute node
     compute_internet::Bool
     registry_update::Bool
@@ -109,7 +112,8 @@ function load_site(name::AbstractString)
         if g !== nothing
             occursin("%d", g["request"]) || fail("$file: [slurm.gpu] request needs a %d for the number of GPUs")
             gpu = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing),
-                       get(g, "max", nothing), read_queues(get(g, "queues", [])), get(g, "precompile_on", nothing))
+                       get(g, "max", nothing), read_queues(get(g, "queues", [])), get(g, "precompile_on", nothing),
+                       get(g, "cpu_target", nothing))
             haskey(g, "default_queue") &&
                 fail("$file: `default_queue` is gone; list the queues in the order of preference")
         end
@@ -134,6 +138,7 @@ function load_site(name::AbstractString)
                 collect(String, get(julia, "modules", String[])),
                 get(julia, "precompile_on", "login"),
                 get(julia, "precompile_tasks", nothing),
+                get(julia, "cpu_target", nothing),
                 parse_time(get(julia, "precompile_time", "0:30:00")),
                 get(julia, "compute_internet", true),
                 get(julia, "registry_update", true),
@@ -145,7 +150,8 @@ function read_queues(tables)
                   haskey(q, "min_time") ? parse_time(q["min_time"]) : nothing,
                   haskey(q, "max_time") ? parse_time(q["max_time"]) : nothing,
                   get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
-                  get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "chain", true))
+                  get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "prefer", false),
+                  get(q, "chain", true))
             for q in tables]
 end
 
@@ -186,8 +192,8 @@ end
 
 """
 The queue for a job: the named one, checked against its limits, or else the
-first in the profile's order that fits. A job with checkpoints prefers a
-pre-emptible queue.
+first in the profile's order that fits. A job with checkpoints takes a
+queue marked `prefer` first.
 """
 function choose_queue(site::Site, queues; name = nothing, what, busy = Set{String}(),
                       seconds, nodes, gpus, checkpoints, chain)
@@ -202,7 +208,7 @@ function choose_queue(site::Site, queues; name = nothing, what, busy = Set{Strin
         return queues[i]
     end
     isempty(queues) && fail("site $(site.name) has no queues for $kind jobs in its profile")
-    order = checkpoints ? [filter(qu -> qu.preempt, queues); filter(qu -> !qu.preempt, queues)] : queues
+    order = checkpoints ? [filter(qu -> qu.prefer, queues); filter(qu -> !qu.prefer, queues)] : queues
     reasons = String[]
     for qu in order
         why = queue_misfit(qu; busy, kw...)
@@ -215,6 +221,9 @@ end
 "Where a combination for CPU or GPU nodes is precompiled: \"login\" or \"compute\"."
 precompile_where(site::Site, gpu::Bool) =
     gpu && site.gpu !== nothing ? something(site.gpu.precompile_on, site.precompile_on) : site.precompile_on
+
+"`JULIA_CPU_TARGET` for the site's CPU or GPU nodes; empty: Julia's default, the node's own CPU."
+cpu_target(site::Site, gpu::Bool) = something(gpu && site.gpu !== nothing ? site.gpu.cpu_target : site.cpu_target, "")
 
 known_sites() = sort!([splitext(f)[1] for f in readdir(sites_dir()) if endswith(f, ".toml")])
 

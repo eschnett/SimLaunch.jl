@@ -349,6 +349,7 @@ unset JULIA_LOAD_PATH JULIA_PROJECT
 export JULIA_DEPOT_PATH="$DEPOT:"         # the study's depot, then Julia's own; not ~/.julia
 export OPENBLAS_NUM_THREADS=1
 export JULIA_PKG_PRECOMPILE_AUTO=0
+export JULIA_CPU_TARGET='generic;znver2,clone_all;znver4,clone_all'     # as the caches were compiled
 
 echo "SimLaunch job $JOBID: study $STUDY, spec $SPEC, site $SITE, host $(hostname -s), $(date)"
 lscpu 2>/dev/null | grep -m1 'Model name' || sysctl -n machdep.cpu.brand_string 2>/dev/null || true
@@ -377,17 +378,17 @@ done
 run_0() {   # base-8r
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0
     export OMP_NUM_THREADS=1
-    exec srun --mpi=pmi2 --nodes=1 --ntasks=8 --cpus-per-task=8 --cpu-bind=none bash -c 'l=${SLURM_LOCALID:-${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/base-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
+    exec srun --mpi=pmi2 --nodes=1 --ntasks=8 --cpus-per-task=8 --cpu-bind=none bash -c 'l=${SLURM_LOCALID:-0}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/base-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
 }
 run_1() {   # new-16r
     set +u; module load nvhpc-hpcx-cuda12/24.9; set -u
     export OMP_NUM_THREADS=1
-    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl -n 16 bash -c 'l=${SLURM_LOCALID:-${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
+    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
 }
 run_2() {   # serial
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0
     export OMP_NUM_THREADS=1
-    exec env TOYVAR=x bash -c 'l=${SLURM_LOCALID:-${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}}; d=$(( l * 8 / 1 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
+    exec env TOYVAR=x bash -c 'l=0; d=$(( l * 8 / 1 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
 }
 
 # One run after another.

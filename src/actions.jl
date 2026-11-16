@@ -7,7 +7,7 @@ prepared_file(site::Site, study) = joinpath(study_depot(site, study), "prepared"
 "A combination's line in the study's `prepared` file on a site."
 function combo_line(c::Combo)
     own = isempty(env_kinds(c.env)) && c.variant == "default"       # the project itself, as the snapshot holds it
-    fields = [own ? c.project : c.envdir, c.args, c.gpu ? "gpu" : ""]
+    fields = [own ? c.project : c.envdir, c.args, c.gpu ? "gpu" : "", c.target]
     while length(fields) > 1 && isempty(fields[end])
         pop!(fields)
     end
@@ -64,6 +64,7 @@ function precompile_block(io::IO, site::Site, c::Combo; instantiate::Bool)
     println(io, "echo \"=== precompile $(combo_text(c)) ===\"")
     println(io, "(")                                   # a recipe's modules and variables stay in here
     recipe_setup(io, site, c.mpi)
+    isempty(c.target) || println(io, "export JULIA_CPU_TARGET=$(q(c.target))")
     println(io, "$julia -e 'using Pkg; $(instantiate ? "Pkg.instantiate(); " : "")Pkg.precompile()'")
     # what a package downloads at first use is fetched now, where there is a network
     for kind in env_kinds(c.env)
@@ -255,6 +256,12 @@ function precompile_on_compute(site::Site, study, needed; poll = 20)
         println("(this can be interrupted; `simlaunch prepare` run again finds the job and continues)")
         wait_job(site, jobid; what = "precompile job", poll)
         left = missing_combos()
+        # the login node can see a file that a compute node wrote a minute late (NFS on Symmetry)
+        for attempt in 1:12
+            isempty(left) && break
+            sleep(min(poll, 5))
+            left = missing_combos()
+        end
         if !isempty(left)
             print(readsite(site, "tail -n 30 " * q(log) * " 2>/dev/null || true"))
             fail("precompile job $jobid on $(site.name) did not finish $(join(combo_text.(left), ", ")); its log is $log")
@@ -331,7 +338,8 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     end
     if isempty(specs)
         project = snap["project"]
-        push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", s.cores == 0, ""))
+        push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", s.cores == 0, "",
+                            cpu_target(s, s.cores == 0)))
     end
     unique!(needed)
     check_connection(s)
@@ -358,7 +366,9 @@ end
 
 "The combinations prepared on the site so far."
 function prepared(site::Site, study)
-    out = readsite(site, "cat " * q(prepared_file(site, study)) * " 2>/dev/null || true")
+    # listing the directory first makes an NFS client look again
+    out = readsite(site, "ls " * q(dirname(prepared_file(site, study))) * " > /dev/null 2>&1; cat " *
+                         q(prepared_file(site, study)) * " 2>/dev/null || true")
     return Set(split(out, '\n'; keepempty = false))
 end
 
