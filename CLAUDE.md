@@ -80,4 +80,7 @@ profile directory; the tests use both.
 - CI: `.github/workflows/CI.yml` runs the tests on Linux and macOS, with
   Julia 1.12 and the newest. macOS has bash 3.2: generated scripts and the
   tests must run under it.
+- Registered in Julia's General registry as `SimLaunch`. TagBot
+  (`.github/workflows/TagBot.yml`) tags a version once its registration has
+  merged. Registering a version is Erik's step, or done when he asks.
 - Commit or push only when Erik asks. No `Co-Authored-By` lines.
