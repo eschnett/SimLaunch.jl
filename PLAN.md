@@ -955,6 +955,7 @@ and for clusters that are down.
    | Octant smoke row | Trillium, one H100 | 1342940 | finished |
    | Octant smoke row | Symmetry, one H200 | 599434 | finished, same values; precompile job 599432 |
    | TreeWaveOLDG thread scan, pinned | Trillium (for Symmetry) | 2869575 | 1 to 192 threads, `rhs` 40 times faster |
+   | Octant smoke row | Fir, one H100 (fc10605) | 4409948 | finished, the same values as on Symmetry; precompile job 4409134 on a GPU node |
    | The same scan | Symmetry, cn102 (EPYC 7543) | 599475 | 1 to 64 threads, `rhs` 0.375 s to 0.020 s at 32; precompile job 599473 |
 
    Open: S1's sweep on Nibi, when it is back. Seen on Symmetry on

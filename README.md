@@ -203,7 +203,8 @@ Milestones 1 to 3 of the plan's four are implemented.
 - Run on clusters:
   - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
     side, and a pinned thread scan of TreeWaveOLDG, 1 to 192 threads.
-  - `fir` (CPU): S1's sweep from the same spec, with the same results.
+  - `fir`: S1's sweep from the same spec, with the same results, and the
+    octant row below on one H100, after a precompile job on a GPU node.
   - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
     `cuda` environment.
   - `symmetry`: the same row on one H200, after a precompile job on an H200
@@ -214,8 +215,7 @@ Milestones 1 to 3 of the plan's four are implemented.
     for two variants on one node.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
 - Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
-  `scancel`: the profile `nibi`, CPU jobs on Symmetry, GPU jobs on Fir, a
-  precompile lock that is held or stale, a chain of jobs, a pre-empted job
+  `scancel`: the profile `nibi`, a precompile lock that is held or stale, a chain of jobs, a pre-empted job
   that submits its successor, and `check-restart`.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
   ranks under MPICH_jll's `mpiexec`.

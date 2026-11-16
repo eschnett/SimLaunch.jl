@@ -17,7 +17,7 @@ partition = false                      # the submit filter chooses, by time and 
 max_time = "7-00:00:00"                # shorter starts sooner: 3 h, 12 h, 24 h, 3 d, 7 d bins
 node = { cores = 192, numa = 8, mem = "768000M", header = ["--exclusive", "--mem=0"] }
 
-[slurm.gpu]                            # H100, 80 GB; not yet run through SimLaunch
+[slurm.gpu]                            # H100, 80 GB; a one-GPU job ran on 2026-11-16 (4409948)
 request = "--gpus=h100:%d"
 cores = 12                             # per GPU: 48 cores for 4 GPUs
 mem = "250G"                           # per GPU; at most about 280G
