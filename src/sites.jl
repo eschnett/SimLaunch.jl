@@ -10,6 +10,9 @@ struct Queue
     preempt::Bool                     # its jobs can be stopped at any time: only for jobs with checkpoints
     prefer::Bool                      # a pre-emptible queue that a job with checkpoints takes first
     chain::Bool                       # false: not for a chain of jobs
+    on_request::Bool                  # taken only when it is named, never by rule
+    arch::Union{String,Nothing}       # its nodes' architecture, where it is not that of the site's other nodes
+    header::Vector{String}            # further batch options of a job in this queue
 end
 
 "How MPI runs are set up and launched on a site."
@@ -161,11 +164,11 @@ function load_site(name::AbstractString)
         end
         haskey(slurm, "default_queue") &&
             fail("$file: `default_queue` is gone; list the queues in the order of preference")
-        queues = read_queues(get(slurm, "queues", []))
+        queues = read_queues(get(slurm, "queues", []), archs, file)
         if g !== nothing
             occursin("%d", g["request"]) || fail("$file: [slurm.gpu] request needs a %d for the number of GPUs")
             gpu = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing),
-                       get(g, "max", nothing), read_queues(get(g, "queues", [])), gpu_arch)
+                       get(g, "max", nothing), read_queues(get(g, "queues", []), archs, file), gpu_arch)
             haskey(g, "default_queue") &&
                 fail("$file: `default_queue` is gone; list the queues in the order of preference")
         end
@@ -196,14 +199,25 @@ function load_site(name::AbstractString)
                 env)
 end
 
-function read_queues(tables)
-    return [Queue(q["partition"],
-                  haskey(q, "min_time") ? parse_time(q["min_time"]) : nothing,
-                  haskey(q, "max_time") ? parse_time(q["max_time"]) : nothing,
-                  get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
-                  get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "prefer", false),
-                  get(q, "chain", true))
-            for q in tables]
+const QUEUE_KEYS = ["partition", "min_time", "max_time", "max_nodes", "max_gpus", "one_at_a_time", "preempt", "prefer",
+                    "chain", "on_request", "arch", "header"]
+
+function read_queues(tables, archs, file)
+    return map(tables) do q
+        for key in keys(q)
+            key in QUEUE_KEYS || fail("$file: a queue has the unknown key `$key`")
+        end
+        arch = get(q, "arch", nothing)
+        arch === nothing || haskey(archs, arch) ||
+            fail("$file, queue $(q["partition"]): no architecture $(repr(arch)) in [arch]")
+        Queue(q["partition"],
+              haskey(q, "min_time") ? parse_time(q["min_time"]) : nothing,
+              haskey(q, "max_time") ? parse_time(q["max_time"]) : nothing,
+              get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
+              get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "prefer", false),
+              get(q, "chain", true), get(q, "on_request", false), arch,
+              collect(String, get(q, "header", String[])))
+    end
 end
 
 function read_recipes(tables, file)
@@ -247,7 +261,7 @@ first in the profile's order that fits. A job with checkpoints takes a
 queue marked `prefer` first.
 """
 function choose_queue(site::Site, queues; name = nothing, what, busy = Set{String}(),
-                      seconds, nodes, gpus, checkpoints, chain)
+                      seconds, nodes, gpus, checkpoints, chain, on_request = false)
     kw = (; seconds, nodes, gpus, checkpoints, chain)
     kind = gpus > 0 ? "GPU" : "CPU"
     if name !== nothing
@@ -258,6 +272,8 @@ function choose_queue(site::Site, queues; name = nothing, what, busy = Set{Strin
         why === nothing || fail("$what, but queue $name on $(site.name) $why")
         return queues[i]
     end
+    # a queue marked `on_request` is for the job that names it
+    on_request || (queues = filter(qu -> !qu.on_request, queues))
     isempty(queues) && fail("site $(site.name) has no queues for $kind jobs in its profile")
     order = checkpoints ? [filter(qu -> qu.prefer, queues); filter(qu -> !qu.prefer, queues)] : queues
     reasons = String[]
@@ -272,11 +288,15 @@ end
 "The architecture of the site's CPU or GPU nodes: its name in the profile."
 site_arch(site::Site, gpu::Bool) = gpu && site.gpu !== nothing ? site.gpu.arch : site.arch
 
+"The architecture of a queue's nodes: its own, or that of the site's CPU or GPU nodes."
+queue_arch(site::Site, queue, gpu::Bool) = queue !== nothing && queue.arch !== nothing ? queue.arch : site_arch(site, gpu)
+
 """
-Where a combination for CPU or GPU nodes is precompiled: \"login\" if the
-login node has their architecture, else \"compute\", in a job.
+Where code for an architecture is precompiled: \"login\" if the login node
+has it, else \"compute\", in a job on a node that has it.
 """
-precompile_where(site::Site, gpu::Bool) = site_arch(site, gpu) == site.login_arch ? "login" : "compute"
+precompile_where(site::Site, arch::AbstractString) = arch == site.login_arch ? "login" : "compute"
+precompile_where(site::Site, gpu::Bool) = precompile_where(site, site_arch(site, gpu))
 
 "`JULIA_CPU_TARGET` for the site's CPU or GPU nodes; empty: Julia's default, the node's own CPU."
 cpu_target(site::Site, gpu::Bool) = site.archs[site_arch(site, gpu)]

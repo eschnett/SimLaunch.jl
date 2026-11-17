@@ -77,7 +77,7 @@ In `[site.<name>]`, or at the top level as a default.
 | `vars` | `{}` | Environment variables for the runs |
 | `queue` | chosen by rule | A partition of the site. Without it, the first in the profile's order that fits |
 | `node` | none | The node or nodes the job runs on, as Slurm writes a node list: `"cn099"`, `"cn[095-096]"` |
-| `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn112"]` |
+| `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn099"]` |
 | `mpi` | none | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
 | `placement` | none | `"numa"` |
 | `prefix` | none | Words before the Julia command, as written: `"perf stat -e cache-misses"` |
@@ -88,8 +88,10 @@ the ranks on a node for a run with ranks, and one NUMA domain's cores with
 `placement = "numa"`.
 
 A partition can mix node types. A benchmark names its node with `node`, or
-keeps off the nodes that differ with `sbatch_args = ["--exclude=cn112"]` or
-a `--constraint`. Which CPU a run got is in its `simlaunch-job.toml`.
+keeps off the nodes that differ with `sbatch_args = ["--exclude=cn099"]` or
+a `--constraint`. A site's profile can do the same for every job in a
+queue, and can mark a queue as taken only by name: on Symmetry, jobs in the
+AMD queues keep off cn112, which `queue = "largememq"` asks for. Which CPU a run got is in its `simlaunch-job.toml`.
 
 ## Runs
 

@@ -12,13 +12,18 @@ code = "/home/eschnetter/claude/studies"
 scratch = "/mnt/beegfs/eschnetter/claude/studies"
 
 [slurm]
-# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes: see [arch] below.
+# The AMD partitions hold Zen 2 and Zen 3 nodes (EPYC 7532, 7543), and cn112, which is
+# another machine: an EPYC 8534P (Zen 4c, AVX-512) with 384 GB and fewer NUMA domains.
+# A job in them keeps off cn112, and cn112 is used through largememq, which holds only it.
+# (It would be simpler if the AMD partitions did not list cn112.)
 node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
 queues = [                             # in the order of preference: amddebugq starts much sooner
-  { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1 },
-  { partition = "amdq",      max_time = "24:00:00", max_nodes = 16 },
+  { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1,  header = ["--exclude=cn112"] },
+  { partition = "amdq",      max_time = "24:00:00", max_nodes = 16, header = ["--exclude=cn112"] },
   # stopped whenever the queues above need its node: SIGTERM, then SIGKILL after 30 s
-  { partition = "amdpreq",   max_time = "24:00:00", max_nodes = 8, preempt = true },
+  { partition = "amdpreq",   max_time = "24:00:00", max_nodes = 8, preempt = true, header = ["--exclude=cn112"] },
+  # cn112 alone: only for a job that names the queue. Its NUMA domains are counted when a run starts.
+  { partition = "largememq", max_time = "24:00:00", max_nodes = 1, on_request = true, arch = "zen4c" },
 ]
 
 [slurm.gpu]                            # H200, 141 GB
@@ -38,11 +43,13 @@ queues = [
 # Architectures: name = JULIA_CPU_TARGET. Nodes of one architecture share a study's
 # compiled caches, and a job sees no others. The login node (Intel) has its own.
 [arch]
-# One cache for the three AMD generations (EPYC 7532, 7543, 8534P): without the
-# Zen 2 part, what cn112 compiles is rejected on a Zen 2 node (jobs 599483, 599484).
+# One cache for the two AMD generations of the AMD partitions (EPYC 7532, 7543): Zen 2
+# code, which a Zen 3 node runs as well. Without a named target, what one generation
+# compiles is rejected on the other (jobs 599483, 599484, then with cn112).
 # No `generic` part: a node that cannot run Zen 2 code must refuse the cache, not
 # run it slowly, as the H200 nodes did with FastPower (jobs 601139, 601141).
-amd = "znver2;znver4,clone_all"
+amd = "znver2"
+zen4c = "native"                       # cn112, in largememq: EPYC 8534P
 h200 = "native"                        # Sapphire Rapids: cn111 is a Xeon Gold 6442Y, cn113 a Platinum 8452Y
 
 [julia]

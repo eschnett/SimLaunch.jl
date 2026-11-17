@@ -299,11 +299,30 @@ end
             sym, fir, tri = load_site("symmetry"), load_site("fir"), load_site("trillium")
             # nodes of one architecture share a depot; the login node compiles for the nodes that have its own
             @test SimLaunch.site_arch(sym, false) == "amd" && SimLaunch.site_arch(sym, true) == "h200" && sym.login_arch == "login"
-            @test SimLaunch.cpu_target(sym, false) == "znver2;znver4,clone_all" && SimLaunch.cpu_target(sym, true) == ""
+            @test SimLaunch.cpu_target(sym, false) == "znver2" && SimLaunch.cpu_target(sym, true) == ""
             @test SimLaunch.precompile_where(sym, false) == SimLaunch.precompile_where(sym, true) == "compute"
             @test SimLaunch.study_depot(sym, "s", "h200") == "/home/eschnetter/claude/studies/s/depot-h200"
             @test SimLaunch.precompile_where(fir, false) == "login" && SimLaunch.precompile_where(fir, true) == "compute"
             @test tri.archs == Dict("default" => "") && SimLaunch.precompile_where(tri, false) == "login"
+            # a queue can hold another kind of node: its own architecture, taken only by name; and its own batch options
+            big = "name = \"big\"\nsite = \"symmetry\"\ntime = \"2:00:00\"\n[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n"
+            job(text; kw...) = resolve(TOML.parse(text), sym; study = "toy", project = "Toy", kw...)
+            j = job(big)
+            @test j.queue.partition == "amdq" && SimLaunch.job_arch(j) == "amd" && only(combos(j)).target == "znver2"
+            @test occursin("#SBATCH --exclude=cn112\n", generate(j)) && occursin("/toy/depot-amd ", generate(j))
+            pre = SimLaunch.precompile_script(sym, "toy", combos(j))
+            @test occursin("#SBATCH --partition=amddebugq\n", pre) && occursin("#SBATCH --exclude=cn112\n", pre)
+            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy/depot-amd\n", pre) && occursin("export JULIA_CPU_TARGET=znver2\n", pre)
+            j = job(big; queue = "largememq")
+            @test SimLaunch.job_arch(j) == "zen4c" && only(combos(j)).arch == "zen4c" && only(combos(j)).target == ""
+            @test !occursin("--exclude", generate(j)) && occursin("/toy/depot-zen4c ", generate(j)) && !occursin("export JULIA_CPU_TARGET", generate(j))
+            @test job(replace(big, "time =" => "queue = \"largememq\"\ntime =")).queue.partition == "largememq"
+            pre = SimLaunch.precompile_script(sym, "toy", combos(j))
+            @test occursin("#SBATCH --partition=largememq\n", pre) && !occursin("--exclude", pre)
+            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy/depot-zen4c\n", pre)
+            why = try job(replace(big, "2:00:00" => "30:00:00")); "" catch err; err.msg end
+            @test occursin("which no queue of symmetry takes", why) && !occursin("largememq", why)
+            @test_throws "at most 1 nodes" job(replace(big, "time =" => "resources = { nodes = 2 }\ntime ="); queue = "largememq")
             profile(text) = (write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n" *
                                                                 "[connect]\nhost = \"odd\"\n[slurm]\nnode = { cores = 4 }\n" * text);
                              load_site("odd"))
@@ -313,6 +332,8 @@ end
             @test_throws "has no [arch] table" profile("[julia]\narch = \"zen\"\n")
             @test_throws "must name one of the architectures" profile("[arch]\nzen = \"znver2\"\n")
             @test_throws "in [arch]; it has zen" profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen3\"\n")
+            @test_throws "unknown key `arhc`" profile("queues = [{ partition = \"p\", arhc = \"zen\" }]\n")
+            @test_throws "queue p: no architecture" profile("queues = [{ partition = \"p\", arch = \"zen\" }]\n")
             @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
             odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
             @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"
@@ -629,8 +650,8 @@ end
             @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
             # the marker of what is prepared names the CPU target of a site with several CPU types
             @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"] .*
-                                            "\t\t\tznver2;znver4,clone_all"
-            @test occursin("export JULIA_CPU_TARGET='znver2;znver4,clone_all'", generate(j))
+                                            "\t\t\tznver2"
+            @test occursin("export JULIA_CPU_TARGET=znver2", generate(j))
             @test occursin("DEPOT=/home/eschnetter/claude/studies/toy2/depot-amd ", generate(j))
             prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
             @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)

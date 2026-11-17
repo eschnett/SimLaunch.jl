@@ -456,10 +456,14 @@ struct Combo
     args::String                      # the Julia flags, joined
     gpu::Bool                         # for the GPU nodes of a site that precompiles on compute nodes
     mpi::String                       # the MPI recipe the environment is built for, or ""
-    target::String                    # JULIA_CPU_TARGET of the caches, or ""
+    arch::String                      # the architecture of the nodes it runs on: which depot holds its caches
+    target::String                    # that architecture's JULIA_CPU_TARGET, or ""
 end
+
+"The architecture of the nodes a job runs on."
+job_arch(job::Job) = queue_arch(job.site, job.queue, job.gpus > 0)
 
 "The combinations a job needs."
 combos(job::Job) = unique!([Combo(job.project, r.variant, r.env, r.envdir, join(r.julia_args, " "), job.gpus > 0, r.mpi,
-                                  cpu_target(job.site, job.gpus > 0))
+                                  job_arch(job), job.site.archs[job_arch(job)])
                             for r in job.runs])

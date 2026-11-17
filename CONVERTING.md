@@ -54,7 +54,7 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | `#SBATCH --partition`, `--time`, `--nodes`, `--gres`, `--mem`, `--exclusive`, `--account` | `time` and `resources` in the site table. The partition is chosen by rule, or `queue`. Cores, memory, account and `--exclusive` come from the site's profile |
 | Any other `#SBATCH` line | `sbatch_args` |
 | `--nodelist` | `node` |
-| `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn112"]` |
+| `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn099"]`. Symmetry's cn112 is excluded by the profile already |
 | A line that records the node and `lscpu`'s model | nothing: every job directory has a `simlaunch-job.toml` with them |
 | A setup stage: `Pkg.instantiate`, `Pkg.precompile`, building environments | `simlaunch prepare`, once per study and site. Nothing of it stays in the job |
 | An environment that copies `test/Project.toml` with the package's path made absolute | `env = "test"` |

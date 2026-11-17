@@ -251,7 +251,8 @@ login node (`[julia] login_arch`) have:
 
 ```toml
 [arch]
-amd = "znver2;znver4,clone_all"        # Symmetry's EPYC 7532, 7543 and 8534P nodes
+amd = "znver2"                         # Symmetry's EPYC 7532 and 7543 nodes
+zen4c = "native"                       # cn112, an EPYC 8534P, through largememq
 h200 = "native"                        # its H200 nodes: Sapphire Rapids
 
 [julia]
@@ -275,6 +276,19 @@ arch = "h200"
   vendor can share one: Zen 2 code serves Zen 3; Sapphire Rapids code
   should serve Granite Rapids. What a newer node loses that way is not
   measured, so Nibi and Fir keep an architecture per node type for now.
+- A queue can hold another kind of node than the site's others, and then
+  names its own architecture: `{ partition = "largememq", on_request =
+  true, arch = "zen4c" }`. A precompile job for an architecture runs in a
+  queue whose nodes have it. `on_request` keeps the queue out of the choice
+  by rule: only a job that names it gets it. A queue's `header` adds batch
+  options to every job in it.
+- Symmetry's AMD partitions list cn112, which is another machine: Zen 4c
+  with AVX-512, 384 GB and fewer NUMA domains, where the others are Zen 2
+  and Zen 3 with 256 GB and 8 domains. The profile keeps every job in them
+  off cn112 (`header = ["--exclude=cn112"]`) and describes `largememq`,
+  which holds only cn112, for the jobs that want it. The AMD architecture
+  is then Zen 2 code alone. Partitions without cn112 would be the simpler
+  fix; that is the site's to make.
 - A target does not start with `generic`. A node that cannot run the code
   must refuse the cache, and its job then stops at its precompile check; a
   `generic` part runs everywhere, slowly and without a word.
@@ -678,7 +692,7 @@ carry. `one_at_a_time`: skipped while the user has a job there, which
 `submit` asks the site; `preempt`: only for a job with checkpoints;
 `prefer`: taken first by a job with checkpoints (`h200preq`, since `h200q`
 is often full; not `amdpreq`); `chain = false`: not for a job with
-checkpoints. The
+checkpoints; `on_request`: never chosen, only named (`largememq`). The
 result:
 
 | Site | Fits in 1 h | Longer | GPU, no checkpoints | GPU with checkpoints |
@@ -1150,8 +1164,8 @@ and for clusters that are down.
      profile now names a target, exported as `JULIA_CPU_TARGET` where
      the caches are compiled and where they are used; the marker of what is
      prepared records it. Symmetry's was
-     `generic;znver2,clone_all;znver4,clone_all`, and is
-     `znver2;znver4,clone_all` since the profiles name architectures.
+     `generic;znver2,clone_all;znver4,clone_all`. It is `znver2` since
+     the profiles name architectures and the AMD queues keep off cn112.
    - **A file written on a compute node shows on the login node late.**
      `prepare` found no marker right after precompile job 599476 had ended.
      It now looks again for up to a minute.
@@ -1200,7 +1214,14 @@ and for clusters that are down.
      Eight packages are in both jobs' depots, each compiled for its own
      nodes. The AMD job also ran 8 and 2 MPI ranks under `srun`, each rank
      on its own NUMA domain and without the `--cpus-per-task` warning.
-     Not seen yet: a job on cn111, whose Xeon Gold 6442Y must accept what
+     The AMD target was `znver2;znver4,clone_all` in these jobs. It is
+     `znver2` since cn112 is kept out of the AMD queues, and that ran the
+     same day: precompile job 601842 and job 601843, both with
+     `--exclude=cn112`, on cn107 (EPYC 7543, Zen 3), which loaded caches
+     built for `znver2` from `depot-amd`. `largememq` has not run: cn112
+     was busy, and a precompile job waiting there would hold the site's
+     precompile lock against every other `prepare`. Not seen yet: a Zen 2
+     node loading what a Zen 3 node compiled; a job on cn111, whose Xeon Gold 6442Y must accept what
      cn113 compiled; if it does not, the job stops at its precompile check.
    - Open, each to be designed:
      - a `depot` root in a profile's `[paths]`, since home is small on most
