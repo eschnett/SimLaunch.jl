@@ -215,8 +215,9 @@ Milestones 1 to 3 of the plan's four are implemented.
     node; TreeWaveOLDG's thread scan on an AMD node; and, with a toy
     project, a chain of three jobs, `check-restart`, a stopped job that
     submits its successor, and MPI ranks on one and two nodes under three
-    recipes, each rank on its NUMA domain; and TreeAMR's nested benchmark
-    for two variants on one node.
+    recipes, each rank on its NUMA domain; two MPI ranks with one H200
+    each, under MPICH_jll and under HPC-X with device buffers; and TreeAMR's
+    nested benchmark for two variants on one node.
   - `local`: the one run of S1's sweep that fits into the laptop's memory.
 - Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
   `scancel`: a precompile lock that is held or stale, a pre-empted job that

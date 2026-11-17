@@ -56,9 +56,11 @@ binary = "jll"
 launcher = "mpiexec"
 env = { HYDRA_LAUNCHER = "fork", MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE = "0", OMP_NUM_THREADS = "1" }
 
-# HPC-X's Open MPI, CUDA-aware, under its own mpiexec. Not yet run through SimLaunch.
+# HPC-X's Open MPI, CUDA-aware, under its own mpiexec. Ran on CPU nodes and with two
+# H200s (device buffers handed to MPI) on 2026-11-16.
 [mpi.system]
 modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
+launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
 multi_node = true
 env = { OMP_NUM_THREADS = "1" }

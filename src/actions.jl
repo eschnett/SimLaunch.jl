@@ -110,6 +110,17 @@ function prepare_script(site::Site, study, needed)
             continue
         end
         packages = unique!(reduce(vcat, [ENV_KINDS[k].packages for k in kinds]))
+        # An environment whose caches a compute node compiled is left as it is: writing it again makes
+        # this node compile MPIPreferences anew, and the caches that were built on it are then stale
+        # (Symmetry, job 600484).
+        users = [u for u in needed if u.envdir == c.envdir]
+        done = all(u -> precompile_where(site, u.gpu) == "compute", users)
+        if done
+            tests = join(["grep -qxF $(q(combo_line(u))) \"\$DEPOT/prepared\" 2>/dev/null" for u in users], " && ")
+            println(io, "if $tests; then")
+            println(io, "echo \"=== environment $(c.envdir): compiled on a compute node already, left as it is ===\"")
+            println(io, "else")
+        end
         "test" in kinds && pushfirst!(packages, "--test")
         println(io, "echo \"=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(kinds, ", ")) ===\"")
         println(io, "(")
@@ -122,6 +133,7 @@ function prepare_script(site::Site, study, needed)
             println(io, "$julia --startup-file=no --project=\"\$CODE\"/$(q(c.envdir)) \"\$CODE\"/tools/set_mpi.jl $(rec.binary)$prefs")
         end
         println(io, ")")
+        done && println(io, "fi")
     end
     for c in needed
         precompile_where(site, c.gpu) == "login" && precompile_block(io, site, c; instantiate = false)

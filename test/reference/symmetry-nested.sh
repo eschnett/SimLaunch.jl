@@ -383,7 +383,7 @@ run_0() {   # base-8r
 run_1() {   # new-16r
     set +u; module load nvhpc-hpcx-cuda12/24.9; set -u
     export OMP_NUM_THREADS=1
-    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
+    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl --bind-to none -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
 }
 run_2() {   # serial
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0

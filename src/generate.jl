@@ -96,7 +96,9 @@ function run_command(job::Job, r::Run)
                   "--cpus-per-task=$(job.cores * r.nodes ÷ r.ranks)", "--cpu-bind=none")
         else
             # the binary's own mpiexec, found through MPI.jl
-            push!(words, julia, "--startup-file=no", "--project=$envdir", "\"\$TOOLS\"/mpiexec.jl", "-n", string(r.ranks))
+            push!(words, julia, "--startup-file=no", "--project=$envdir", "\"\$TOOLS\"/mpiexec.jl")
+            append!(words, q.(rec.launcher_args))
+            push!(words, "-n", string(r.ranks))
         end
     elseif job.pin
         push!(words, "srun")

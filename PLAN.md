@@ -367,7 +367,11 @@ flags.
    different CPU from the compute nodes, `prepare` submits a short precompile
    job on the target partition, on the node type of the job that will use it.
    `prepare` can be interrupted while that job waits in the queue; run again,
-   it finds the job and continues.
+   it finds the job and continues. An environment that a compute node has
+   compiled is not written again by a later `prepare`: the login node would
+   compile MPIPreferences anew, and the compute node's caches of MPI would
+   be stale (Symmetry, job 600484, which stopped at its check with "not
+   precompiled").
 
 **The study's depot.** Every study has a Julia depot of its own on each site,
 `<code root>/<study>/depot/`, and its jobs run with
@@ -505,6 +509,38 @@ nodes; `resources.nodes` above 1 restricts the queue choice to queues that
 allow it (on Symmetry `amdq`, since `amddebugq` takes one node). A recipe
 that starts its ranks with `srun` is refused in a GPU job, whose allocation
 is one task; such a job uses a recipe with the binary's own `mpiexec`.
+
+**MPI with GPUs** ran on Symmetry on 2026-11-16 (job 601126, cn111, two
+H200s): a toy study, two ranks with one GPU each, exchanging a small and a
+32 MiB message and checking what arrives.
+
+| Run | MPI | Buffers handed to MPI | Result |
+|-----|-----|-----------------------|--------|
+| `fork-staged` | MPICH_jll, `jll-fork` | host copies | ok |
+| `hpcx-staged` | HPC-X, `system` | host copies | ok |
+| `hpcx-direct-nopool` | HPC-X, `system` | device, `JULIA_CUDA_MEMORY_POOL=none` | ok |
+| `hpcx-direct` | HPC-X, `system` | device, CUDA.jl's default pool | ok |
+
+A spec asks for it with `resources = { gpus = 2 }`, `env = "cuda"`, and
+`mpi` and `ranks = 2` in a run; a rank chooses its GPU itself
+(`CUDA.device!(rank % ndevices)`), since both ranks see both. Each rank had
+all 16 cores of the job: a recipe's `launcher_args` now go to an `mpiexec`
+too, and HPC-X's are `--bind-to none`, without which Open MPI binds a rank
+and all its threads to one core. What is left open:
+
+- `JULIA_CUDA_MEMORY_POOL=none` is what MPI.jl's "Known issues" ask for with
+  a CUDA-aware MPI (CUDA.jl's allocator against the library's `cuIpc*`
+  calls; the symptoms are `cuIpcGetMemHandle failed` or a segmentation
+  fault in `gdr_pin_buffer`). The toy run did not need it. It is not in the
+  recipe: a run that hands device buffers to MPI sets it in its `vars` if
+  it meets those symptoms.
+- The HPC-X module puts its own CUDA 12 libraries on the library path, and
+  CUDA.jl, with its own 13.4 runtime, then warns that `libcusparse.so.12`
+  and `libnvJitLink.so.12` "were loaded from a system path". The runs
+  finished all the same. Using the site's toolkit throughout
+  (`CUDA.set_runtime_version!(local_toolkit = true)`, a step of `prepare`
+  as `set_mpi.jl` is for MPI, with a key in the recipe) is the answer if a
+  real code trips over the mixture; it is not implemented.
 
 **Escape hatch.** `sbatch_args` adds lines to the batch header as written,
 and a run's `prefix` is put before its Julia command as written. A need that
@@ -1059,9 +1095,8 @@ and for clusters that are down.
    output.
 
    Open of the done-when list: `check-restart` for the converted drivers,
-   a checkpointed GPU row on `h200preq`, a chain on Trillium with its
-   results read by the study scripts, and the nested benchmark's two-node
-   job. A real pre-emption has not happened yet, only its signal. Not implemented: a run's `julia` channel, the
+   a checkpointed GPU row on `h200preq`, and a chain on Trillium with its
+   results read by the study scripts. A real pre-emption has not happened yet, only its signal. Not implemented: a run's `julia` channel, the
    memory part of the resource check, `--snapshot-pins`, `combine` on the
    laptop, and the removal of a snapshot from the laptop by `clean`.
 4. **Migration.** The tables above, one script at a time, each when a run of
