@@ -782,6 +782,23 @@ SimWatch installed on every site. Erik's own view stays
 `simwatch <site>:<dir>`, which the tool prints at submission and with the
 table.
 
+**Cancel.** `simlaunch cancel <study> <spec>` cancels the spec's jobs and
+marks every run that has not ended as `cancelled` in its SimWatch file,
+with `--message` as the reason. SimWatch 1.5.0 has that state: final, grey,
+hidden with the finished runs. A plain `scancel` cannot say it: a job
+cancelled while it waits writes nothing, its runs stay `queued`, and
+SimWatch shows them as lost. The command marks the runs through the batch
+script (`<script> --cancelled <message>`), cancels the jobs, including a
+successor that a stopped job submitted, and marks again what a job wrote
+while it ended. A finished or failed run stays as it is.
+
+A job that is told to stop without the command says what it can tell.
+Without checkpoints: `failed`, "killed at the time limit", within a minute
+of the limit, and `cancelled` otherwise, also for the runs that had not
+started. With checkpoints a run is `stopped`, as before, since a later job
+can continue it; only the command makes it `cancelled`, and a job whose run
+is marked submits no successor.
+
 **Wait.** `simlaunch wait <study> <spec>` watches until no job of the spec
 is queued or running, printing each run's status as it changes, and exits
 with 0 only when every run has finished; `submit --wait` is `submit` followed

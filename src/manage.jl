@@ -371,6 +371,48 @@ function after(study::AbstractString, spec::AbstractString; site::AbstractString
 end
 
 """
+    cancel(study, spec; site, message = "", poll = 20) -> Vector{String}
+
+Cancel a spec's jobs on the site, and say so in its runs' SimWatch files:
+every run that has not ended is marked `cancelled`, a final state, with
+`message`. A plain `scancel` leaves a queued run `queued`, which SimWatch
+then shows as lost. The runs are marked before the jobs are cancelled, so
+that a job told to stop knows it was meant, and again once the jobs are
+gone. A run that has finished or failed stays as it is; a run whose job is
+gone already is marked too. Returns the runs it marked.
+"""
+function cancel(study::AbstractString, spec::AbstractString; site::AbstractString, message::AbstractString = "",
+                poll = 20, io::IO = stdout)
+    s = load_site(site)
+    job = only(load_jobs(study, s, [spec]))
+    check_connection(s)
+    stamped = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]"
+    script = strip(readsite(s, "ls $(q(joinpath(study_code(s, study), "jobs")))/$(q(job.name))-$stamped.sh 2>/dev/null | tail -n 1; true"))
+    isempty(script) && fail("no job of spec $(job.name) has been submitted on $(s.name)")
+    text = isempty(strip(message)) ? "cancelled with simlaunch cancel" : replace(strip(message), r"\s+" => " ")
+    mark() = split(readsite(s, "grep -q -- --cancelled $(q(script)) || { echo 'the batch script of spec $(job.name) was generated " *
+                               "before `simlaunch cancel` existed; cancel its job with scancel' >&2; exit 1; }; " *
+                               "bash $(q(script)) --cancelled $(q(text))"), '\n'; keepempty = false)
+    marked = Set{String}(mark())
+    stopped = String[]
+    for round in 1:5                                  # a job told to stop may have submitted a successor
+        active = active_jobs(s, study, job.name)
+        isempty(active) && break
+        for id in active
+            cancel_job(s, study, job.name, id)
+            wait_ended(s, study, job.name, id; poll, timeout = 300)
+            push!(stopped, id)
+        end
+    end
+    union!(marked, mark())                           # what a job wrote while it ended
+    runs = ["$(job.name)-$l" for l in sort!(collect(marked))]
+    println(io, isempty(stopped) ? "no job of spec $(job.name) was queued or running on $(s.name)" :
+                                   "cancelled job $(join(unique!(stopped), ", ")) of spec $(job.name) on $(s.name)")
+    println(io, isempty(runs) ? "no run was left to mark: all had ended" : "marked as cancelled: $(join(runs, ", "))")
+    return runs
+end
+
+"""
     wait_spec(study, spec; site, only_runs = [], poll = 20) -> Bool
 
 Wait until no job of the spec is queued or running on the site, printing each

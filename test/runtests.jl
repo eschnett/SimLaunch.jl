@@ -1,7 +1,7 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
                  prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions,
-                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec, after
+                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec, after, cancel
 using Test
 using TOML
 
@@ -120,7 +120,7 @@ function wait_for(scratch, names; timeout = 120)
     t0 = time()
     while time() - t0 < timeout
         tables = [try TOML.parsefile(joinpath(scratch, n, "simwatch.toml")) catch; nothing end for n in names]
-        all(t -> t !== nothing && t["status"] in ("finished", "failed"), tables) && return tables
+        all(t -> t !== nothing && t["status"] in ("finished", "failed", "cancelled"), tables) && return tables
         sleep(0.5)
     end
     error("the runs did not end within $timeout s")
@@ -453,16 +453,59 @@ end
             jobid = submit("toy", f; site = "local", io = devnull)
             bad, = wait_for(scratch, ["hello-bad"])
             @test bad["status"] == "failed" && occursin("exit code 7", bad["message"])
-            # the second run is now running; stop the job as a time limit would
+            # the second run is now running; stop the job as scancel would
             pidfile = joinpath(scratch, "logs", "hello-$jobid.pid")
             while !isfile(joinpath(scratch, "hello-long", "001-$jobid", "result.csv")); sleep(0.2); end
             run(`kill -TERM $(readchomp(pidfile))`)
             long, never = wait_for(scratch, ["hello-long", "hello-never"])
-            @test long["status"] == "failed" && never["status"] == "failed"
+            # ended from outside, before any time limit: cancelled, not failed
+            @test long["status"] == "cancelled" && occursin("the job was cancelled in 001-", long["message"])
+            @test never["status"] == "cancelled" && occursin("cancelled before this run finished", never["message"])
             sleep(1)
             @test !iswritable(joinpath(scratch, "hello-long", "001-$jobid"))
             log = read(joinpath(scratch, "logs", "hello-$jobid.out"), String)
             @test occursin("=== output of bad", log) && occursin("ended with exit code", log)
+        end
+
+        @testset "cancel" begin
+            f = spec(replace(spec_text("""
+                                       [[run]]
+                                       label = "long"
+                                       cmd = "examples/hello.jl n=2 sleep"
+                                       threads = 1
+
+                                       [[run]]
+                                       label = "next"
+                                       cmd = "examples/hello.jl n=3"
+                                       threads = 1
+
+                                       [[run]]
+                                       label = "done"
+                                       cmd = "examples/hello.jl n=4"
+                                       threads = 1
+                                       """), "name = \"hello\"" => "name = \"can\""))
+            @test_throws "no job of spec can has been submitted" cancel("toy", f; site = "local", io = devnull)
+            # one run finishes, then the job is cancelled while the next one runs
+            only1 = submit("toy", f; site = "local", only_runs = ["done"], io = devnull)
+            wait_for(scratch, ["can-done"])
+            sleep(1.1)
+            jobid = submit("toy", f; site = "local", only_runs = ["long", "next"], io = devnull)
+            while !isfile(joinpath(scratch, "can-long", "001-$jobid", "result.csv")); sleep(0.2); end
+            out = IOBuffer()
+            marked = cancel("toy", f; site = "local", message = "superseded by \"can2\"", poll = 0.3, io = out)
+            @test marked == ["can-long", "can-next"]
+            text = String(take!(out))
+            @test occursin("cancelled job $jobid of spec can on local", text) && occursin("marked as cancelled: can-long, can-next", text)
+            long, next, done = [TOML.parsefile(joinpath(scratch, n, "simwatch.toml")) for n in ("can-long", "can-next", "can-done")]
+            @test long["status"] == next["status"] == "cancelled" && long["message"] == next["message"] == "superseded by can2"
+            @test done["status"] == "finished"                                    # a run that has ended stays as it is
+            @test startswith(read(joinpath(scratch, "can-long", ".simlaunch-job"), String), "$jobid cancelled ")
+            @test !iswritable(joinpath(scratch, "can-long", "001-$jobid"))
+            # again: nothing runs, and nothing is left to mark but what is cancelled already
+            cancel("toy", f; site = "local", poll = 0.3, io = out)
+            @test occursin("no job of spec can was queued or running", String(take!(out)))
+            @test TOML.parsefile(joinpath(scratch, "can-long", "simwatch.toml"))["message"] == "cancelled with simlaunch cancel"
+            @test SimLaunch.command(["cancel", "toy", f, "--site", "local", "--message", "x"]) == 0
         end
 
         @testset "wait" begin

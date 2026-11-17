@@ -103,6 +103,33 @@ sw_write() {
     return 0
 }
 
+# sw_status RUN-INDEX: the status in the run's simwatch.toml, or nothing.
+sw_status() {
+    sed -n 's/^status = "\(.*\)"$/\1/p' "$(run_dir "$1")/simwatch.toml" 2>/dev/null | head -n 1
+}
+
+# at_limit: true once the job is within a minute of its time limit.
+at_limit() {
+    [ -n "$TIME_LIMIT" ] && [ $(( $(date +%s) - SW_T0 )) -ge $(( TIME_LIMIT - 60 )) ]
+}
+
+# sw_cancel RUN-INDEX MESSAGE: mark a run that has not ended as cancelled, a
+# final state for SimWatch; the rest of its file stays. Prints the run's
+# label if it was marked. For `simlaunch cancel`, before and after the jobs
+# are cancelled.
+sw_cancel() {
+    local f tmp msg
+    f=$(run_dir "$1")/simwatch.toml
+    case $(sw_status "$1") in
+        queued|starting|running|stopped|cancelled) ;;
+        *) return 0 ;;
+    esac
+    msg=$(printf '%s' "$2" | tr -d '"\\|&\n')
+    tmp=$f.tmp.$$.$RANDOM
+    sed -e 's/^status = .*/status = "cancelled"/' -e "s/^updated = .*/updated = $(sw_now)/" \
+        -e "s|^message = .*|message = \"$msg\"|" "$f" > "$tmp" && mv -f "$tmp" "$f" && echo "${LABELS[$1]}"
+}
+
 # sw_queued RUN-INDEX [LATER-JOBS]: a submitted job, before it starts. Does
 # nothing if the job has started already.
 sw_queued() {
@@ -267,6 +294,9 @@ run_one() {
     if [ "$rc" -eq 0 ]; then
         echo "$JOBID done 0" > "$dir/.simlaunch-job"
         sw_write "$i" finished "finished in $(basename "$jobdir")"
+    elif [ -n "$told" ] && [ "$(sw_status "$i")" = cancelled ]; then
+        # `simlaunch cancel` marked the run before it cancelled the job: the mark stays
+        echo "$JOBID cancelled $rc" > "$dir/.simlaunch-job"
     elif [ "$CHECKPOINTS" = 1 ] && [ -n "$CONTINUE_CODE" ] && [ "$rc" -eq "$CONTINUE_CODE" ]; then
         # the driver stopped at its walltime: not a failure
         echo "$JOBID stopped $rc" > "$dir/.simlaunch-job"
@@ -276,6 +306,13 @@ run_one() {
         next=$(cat "$SCRATCH/logs/$SPEC-$JOBID.next" 2>/dev/null)
         echo "$JOBID stopped $rc" > "$dir/.simlaunch-job"
         sw_write "$i" stopped "stopped by a signal in $(basename "$jobdir"); ${next:+job $next continues it}${next:-a later job continues it}" "$next"
+    elif [ -n "$told" ] && at_limit; then
+        echo "$JOBID done $rc" > "$dir/.simlaunch-job"
+        sw_write "$i" failed "killed at the time limit in $(basename "$jobdir") on $(hostname -s)"
+    elif [ -n "$told" ]; then
+        # ended from outside before the time limit: scancel, or a pre-emption without checkpoints
+        echo "$JOBID cancelled $rc" > "$dir/.simlaunch-job"
+        sw_write "$i" cancelled "the job was cancelled in $(basename "$jobdir") on $(hostname -s)"
     else
         echo "$JOBID done $rc" > "$dir/.simlaunch-job"
         sw_write "$i" failed "exit code $rc in $(basename "$jobdir") on $(hostname -s)"
@@ -299,10 +336,13 @@ wait_runs() {
 # where a chain or `simlaunch resubmit` continues, and not while the file
 # $SCRATCH/STOP exists.
 submit_successor() {
-    local pending next
+    local pending next i
     if [ "$SUCCESSOR" != 1 ]; then return 0; fi
+    for i in "${!LABELS[@]}"; do
+        if [ "$(sw_status "$i")" = cancelled ]; then echo "job $JOBID: run ${LABELS[$i]} is cancelled, no successor"; return 0; fi
+    done
     if [ -e "$SCRATCH/STOP" ]; then echo "job $JOBID: $SCRATCH/STOP exists, no successor"; return 0; fi
-    if [ -n "$TIME_LIMIT" ] && [ $(( $(date +%s) - SW_T0 )) -ge $(( TIME_LIMIT - 60 )) ]; then return 0; fi
+    if at_limit; then return 0; fi
     pending=$(squeue -h -u "$(id -un)" -n "${SLURM_JOB_NAME:-}" -t PENDING -o %i 2>/dev/null | head -n 1)
     if [ -n "$pending" ]; then echo "job $JOBID: job $pending is queued already and continues"; return 0; fi
     next=$(sbatch --parsable $SBATCH_EXPORT --dependency=afterany:"$JOBID" "$SCRIPT" 2>&1)
@@ -338,8 +378,15 @@ finish() {
                 chmod -R a-w "${JOBDIRS[$i]}"
                 record_usage "$i" "${JOBDIRS[$i]}"
             fi
-            sw_write "$i" failed "job $JOBID ended before this run finished (exit code $rc)"
-            echo "$JOBID done $rc" > "$dir/.simlaunch-job"
+            if [ "$(sw_status "$i")" = cancelled ]; then
+                echo "$JOBID cancelled $rc" > "$dir/.simlaunch-job"
+            elif [ -n "$TERMINATED" ] && [ "$CHECKPOINTS" = 0 ] && ! at_limit; then
+                sw_write "$i" cancelled "job $JOBID was cancelled before this run finished"
+                echo "$JOBID cancelled $rc" > "$dir/.simlaunch-job"
+            else
+                sw_write "$i" failed "job $JOBID ended before this run finished (exit code $rc)"
+                echo "$JOBID done $rc" > "$dir/.simlaunch-job"
+            fi
         fi
         if [ -d "${JOBDIRS[$i]:-}" ]; then
             echo
@@ -357,6 +404,12 @@ finish() {
 if [ "${1:-}" = --queued ]; then
     JOBID=$2
     for i in "${!LABELS[@]}"; do sw_queued "$i" "${3:-}"; done
+    exit 0
+fi
+
+# Called by `simlaunch cancel`: the runs that have not ended are marked cancelled.
+if [ "${1:-}" = --cancelled ]; then
+    for i in "${!LABELS[@]}"; do sw_cancel "$i" "${2:-cancelled}"; done
     exit 0
 fi
 

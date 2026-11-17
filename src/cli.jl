@@ -28,6 +28,8 @@ const USAGE = """
           What the study's runs hold on disk, as each job recorded it.
       simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
           List what would be deleted on the site, and delete it after confirmation.
+      simlaunch cancel <study> <spec.toml> --site <site> [--message <text>]
+          Cancel the spec's jobs and mark its runs that have not ended as cancelled, for SimWatch.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
           Run the spec's [combine] script over each run's job directories.
       simlaunch after <study> <spec.toml> --site <site> [--run <label>]... [--checkout]
@@ -156,6 +158,10 @@ function command(args)
         length(pos) == 1 || fail("usage: simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]")
         clean(pos[1]; site = need(opt, "site"), old_checkpoints = get(opt, "old-checkpoints", false),
               runs = get(opt, "run", String[]), yes = get(opt, "yes", false))
+    elseif cmd == "cancel"
+        pos, opt = parse_args(rest, ["site", "message", "poll"])
+        length(pos) == 2 || fail("usage: simlaunch cancel <study> <spec.toml> --site <site> [--message <text>]")
+        cancel(pos[1], pos[2]; site = need(opt, "site"), message = get(opt, "message", ""), poll = poll_seconds(opt))
     elseif cmd == "combine"
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
         length(pos) == 2 || fail("usage: simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...")

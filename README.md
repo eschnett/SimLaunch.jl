@@ -152,6 +152,7 @@ simlaunch status s1                 # one table of the study's runs on all its s
 simlaunch fetch s1                  # results into <project>/.claude/data/s1/<site>/
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
 simlaunch after s1 jobs/s1-sweep.toml --site trillium   # the spec's [after] command again
+simlaunch cancel s1 jobs/s1-sweep.toml --site trillium --message "superseded"   # cancels its jobs, marks its runs cancelled
 simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
 ```
 

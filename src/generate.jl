@@ -217,6 +217,12 @@ function generate(job::Job; script = "", successor = true)
               exit 0
           fi
 
+          # Called by `simlaunch cancel`: the runs that have not ended are marked cancelled.
+          if [ "\${1:-}" = --cancelled ]; then
+              for i in "\${!LABELS[@]}"; do sw_cancel "\$i" "\${2:-cancelled}"; done
+              exit 0
+          fi
+
           JOBID=\${SLURM_JOB_ID:-\${SIMLAUNCH_JOB_ID:-}}
           if [ -z "\$JOBID" ]; then
               echo "no job ID: submit with sbatch, or set SIMLAUNCH_JOB_ID" >&2

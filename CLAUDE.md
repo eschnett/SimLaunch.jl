@@ -73,6 +73,9 @@ profile directory; the tests use both.
   `JULIA_DEPOT_PATH="<study>/depot-<architecture>:"`, never with `~/.julia`
   or another architecture's depot (PLAN.md, "Site profiles" and "Prepare").
   A target in `[arch]` does not start with `generic`.
+- Cancel a SimLaunch job with `simlaunch cancel <study> <spec>`, not with a
+  plain `scancel`, which leaves a queued run `queued` and SimWatch showing
+  it as lost. Ask Erik first, as for a job.
 - Cluster facts live in `sites/*.toml`. On a cluster, follow that cluster's
   skill: check the connection first, and never open one that needs MFA.
 - Submitting a job, or anything else on a cluster, is visible to others: ask
