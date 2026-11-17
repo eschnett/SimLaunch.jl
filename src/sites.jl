@@ -13,6 +13,7 @@ struct Queue
     on_request::Bool                  # taken only when it is named, never by rule
     arch::Union{String,Nothing}       # its nodes' architecture, where it is not that of the site's other nodes
     header::Vector{String}            # further batch options of a job in this queue
+    min_gpus::Union{Int,Nothing}      # a queue for whole GPU nodes takes no smaller job
 end
 
 "How MPI runs are set up and launched on a site."
@@ -201,7 +202,7 @@ function load_site(name::AbstractString)
 end
 
 const QUEUE_KEYS = ["partition", "min_time", "max_time", "max_nodes", "max_gpus", "one_at_a_time", "preempt", "prefer",
-                    "chain", "on_request", "arch", "header"]
+                    "chain", "on_request", "arch", "header", "min_gpus"]
 
 function read_queues(tables, archs, file)
     return map(tables) do q
@@ -217,7 +218,7 @@ function read_queues(tables, archs, file)
               get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
               get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "prefer", false),
               get(q, "chain", true), get(q, "on_request", false), arch,
-              collect(String, get(q, "header", String[])))
+              collect(String, get(q, "header", String[])), get(q, "min_gpus", nothing))
     end
 end
 
@@ -256,6 +257,7 @@ the partitions that have a job of this user already.
 """
 function queue_misfit(qu::Queue; seconds, nodes, gpus, checkpoints, chain, busy)
     qu.max_gpus !== nothing && gpus > qu.max_gpus && return "allows at most $(qu.max_gpus) GPUs"
+    qu.min_gpus !== nothing && gpus < qu.min_gpus && return "takes no fewer than $(qu.min_gpus) GPUs, a whole node"
     qu.max_time !== nothing && seconds > qu.max_time && return "allows at most $(time_string(qu.max_time))"
     qu.min_time !== nothing && seconds < qu.min_time && return "takes no less than $(time_string(qu.min_time))"
     qu.max_nodes !== nothing && nodes > qu.max_nodes && return "allows at most $(qu.max_nodes) nodes"

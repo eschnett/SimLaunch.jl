@@ -23,9 +23,13 @@ request = "--gpus-per-node=%d"
 cores = 24                             # per GPU, with 192000 M; given, not asked for
 request_cores = false
 max = 4
+# A job with all 4 GPUs of a node is a whole-node job: the site takes it only in the
+# *_full_node partitions, and a smaller job only in the others.
 queues = [                             # in the order of preference
-  { partition = "debug",   max_time = "2:00:00", one_at_a_time = true },
-  { partition = "compute", max_time = "24:00:00" },
+  { partition = "debug",             max_time = "2:00:00",  max_gpus = 3, one_at_a_time = true },
+  { partition = "debug_full_node",   max_time = "1:00:00",  min_gpus = 4, one_at_a_time = true },
+  { partition = "compute",           max_time = "24:00:00", max_gpus = 3 },
+  { partition = "compute_full_node", max_time = "24:00:00", min_gpus = 4 },
 ]
 
 [julia]

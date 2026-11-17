@@ -374,6 +374,12 @@ end
             @test combo_line(only(combos(j))) == "envs/default-cuda\t\tgpu"
             j = job("trillium-gpu")
             @test j.gpus == 2 && j.cores == 48 && j.queue.partition == "debug"
+            # all 4 GPUs of a node: the partitions for whole nodes, and only those
+            whole(time; kw...) = job("trillium-gpu"; text = replace(gpu_spec, "gpus = 2" => "gpus = 4", "1:00:00" => time), kw...)
+            @test whole("1:00:00").queue.partition == "debug_full_node" && whole("2:00:00").queue.partition == "compute_full_node"
+            @test_throws "allows at most 3 GPUs" whole("1:00:00"; queue = "compute")
+            @test_throws "takes no fewer than 4 GPUs" job("trillium-gpu"; queue = "compute_full_node")
+            @test job("trillium-gpu"; text = replace(gpu_spec, "1:00:00\"\n            resources = { gpus = 2 }" => "1:30:00\"\n            resources = { gpus = 2 }")).queue.partition == "debug"
             j = job("nibi")
             @test j.gpus == 0 && j.queue === nothing && j.runs[1].envdir == "src/Toy"
             @test combo_line(only(combos(j))) == "Toy"

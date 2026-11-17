@@ -753,7 +753,12 @@ carry. `one_at_a_time`: skipped while the user has a job there, which
 `submit` asks the site; `preempt`: only for a job with checkpoints;
 `prefer`: taken first by a job with checkpoints (`h200preq`, since `h200q`
 is often full; not `amdpreq`); `chain = false`: not for a job with
-checkpoints; `on_request`: never chosen, only named (`largememq`). The
+checkpoints; `on_request`: never chosen, only named (`largememq`); `min_gpus`: a
+queue for whole GPU nodes takes no smaller job. Trillium's GPU cluster has
+such queues: a job with all 4 GPUs of a node is refused in `debug` and
+`compute` and belongs in `debug_full_node` (1 hour) or `compute_full_node`,
+and a smaller job the other way round. TreeAMR's 4-GPU jobs found that on
+2026-11-17, when the profile knew only the first two. The
 result:
 
 | Site | Fits in 1 h | Longer | GPU, no checkpoints | GPU with checkpoints |
