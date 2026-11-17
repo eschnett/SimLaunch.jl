@@ -59,7 +59,7 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | A setup stage: `Pkg.instantiate`, `Pkg.precompile`, building environments | `simlaunch prepare`, once per study and site. Nothing of it stays in the job |
 | An environment that copies `test/Project.toml` with the package's path made absolute | `env = "test"` |
 | `Pkg.add("CUDA")` into a scratch environment | `env = "cuda"`, or `"test+cuda"` |
-| `MPIPreferences.use_jll_binary()` / `use_system_binary()`, `module load` of an MPI | `mpi = "<recipe>"`; the recipe is in the site's profile |
+| `MPIPreferences.use_jll_binary()` / `use_system_binary()`, `module load` of an MPI | nothing for the site's own MPI: it is the default recipe of a run with `ranks`. `mpi = "<recipe>"` for another one of the site's profile |
 | `srun --mpi=pmi2 --ntasks=R …`, `mpiexec -n R …` | `ranks = R` and the recipe's launcher |
 | A rank script with `numactl --cpunodebind=$d --membind=$d` | `placement = "numa"` |
 | `JULIA_EXCLUSIVE=1` with `srun --cpu-bind=none` | `pin = true` |

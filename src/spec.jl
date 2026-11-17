@@ -307,9 +307,15 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
             fail("$where: `nodes` must be between 1 and the job's $nodes node$(nodes == 1 ? "" : "s")")
         recipe = get(r, "mpi", setting("mpi", ""))
         recipe isa AbstractString || fail("$where: `mpi` names a recipe of the site's profile")
+        # the site's default: for a run with ranks that names no recipe, and for `mpi = "default"`
+        if recipe == "default" || (ranks > 0 && isempty(recipe))
+            site.mpi_default === nothing &&
+                fail("$where: ", recipe == "default" ? "`mpi = \"default\"`" : "a run with `ranks`", " needs `mpi`, a recipe of $(site.name), ",
+                     "whose profile names no default: ",
+                     isempty(site.mpi) ? "it has no recipes" : "it has " * join(sort!(collect(keys(site.mpi))), ", "))
+            recipe = site.mpi_default
+        end
         if ranks > 0
-            isempty(recipe) && fail("$where: a run with `ranks` needs `mpi`, a recipe of $(site.name): ",
-                                    isempty(site.mpi) ? "its profile has none" : join(sort!(collect(keys(site.mpi))), ", "))
             mode === :parallel && fail("$where: runs with `ranks` run one after another; use `mode = \"sequential\"`")
             ranks % run_nodes == 0 || fail("$where: $ranks ranks do not divide evenly over $run_nodes nodes")
         else

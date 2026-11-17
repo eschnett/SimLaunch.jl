@@ -78,7 +78,7 @@ In `[site.<name>]`, or at the top level as a default.
 | `queue` | chosen by rule | A partition of the site. Without it, the first in the profile's order that fits |
 | `node` | none | The node or nodes the job runs on, as Slurm writes a node list: `"cn099"`, `"cn[095-096]"` |
 | `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn099"]` |
-| `mpi` | none | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
+| `mpi` | the site's default, for a run with `ranks` | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
 | `placement` | none | `"numa"` |
 | `prefix` | none | Words before the Julia command, as written: `"perf stat -e cache-misses"` |
 
@@ -139,7 +139,7 @@ spec whose environments and Julia options a later `submit` uses.
 [[run]]
 label = "new-8x8"
 cmd = "bench/nested.jl mpi"
-mpi = "jll"                         # a recipe of the site's profile
+mpi = "jll"                         # a recipe of the site's profile; without it, the site's default
 ranks = 8
 threads = 8                         # per rank
 placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
@@ -148,6 +148,12 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
 - `mpi` names a recipe in `sites/<site>.toml`, `[mpi.<recipe>]`: which MPI
   binary, which launcher, which modules. Runs of one job may use different
   recipes.
+- A run with `ranks` that names no recipe gets the site's default (`default`
+  in its `[mpi]` table), and so does `mpi = "default"`. A spec that leaves
+  `mpi` out runs on every site. The default is the standard MPI ABI on
+  every site: on a cluster the site's own MPI through mpi_abi_wrapper, on
+  the laptop MPIABI_jll. Name a recipe only to compare MPI libraries or to
+  work around one.
 - `ranks` starts the run through the recipe's launcher. A run with `mpi` but
   without `ranks` runs in the recipe's environment without a launcher.
 - `placement = "numa"` binds each rank to one NUMA domain, its cores and

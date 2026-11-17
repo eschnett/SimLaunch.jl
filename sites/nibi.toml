@@ -36,3 +36,24 @@ modules = []
 arch = "granite"
 precompile_time = "0:30:00"
 compute_internet = true
+
+[mpi]
+default = "system"                     # for a run that names no recipe
+
+[mpi.jll]                              # MPICH_jll: much slower between nodes than the system's
+launcher = "srun"
+launcher_args = ["--mpi=pmi2"]
+env = { OMP_NUM_THREADS = "1" }
+
+# Open MPI 4.1.5 of StdEnv/2023 through mpi_abi_wrapper. juliaup's Julia cannot
+# load it; the patched one can. Four ranks ran on one node on 2026-11-17 (job 27652961).
+[mpi.system]
+julia = "~/claude/julia-1.13.4-nibi/bin/julia"
+modules = ["StdEnv/2023"]              # also sets the OMPI_MCA variables that keep Open MPI off libfabric
+launcher = "srun"
+launcher_args = ["--mpi=pmix"]
+env = { OMP_NUM_THREADS = "1" }
+[mpi.system.preferences]
+library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
+mpiexec = "/home/eschnett/claude/openmpi-4.1.5-mpi-abi/bin/mpiexec"
+abi = "MPIABI"

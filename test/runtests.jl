@@ -139,6 +139,11 @@ end
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
+          [mpi]
+          default = "abi"
+          [mpi.abi]
+          binary = "MPIABI_jll"
+          launcher = "mpiexec"
           """)
     for name in ("trillium", "trillium-gpu", "symmetry", "nibi", "fir")
         cp(joinpath(pkgdir(SimLaunch), "sites", "$name.toml"), joinpath(sites, "$name.toml"))
@@ -231,7 +236,18 @@ end
             @test_throws "no queue" job(spec_text(RUNS), trillium; queue = "nonesuch")
             @test_throws "unknown key" job(spec_text(RUNS; top = "tiem = \"1:00:00\""), trillium)
             @test_throws "[restart] table" job(spec_text(RUNS; top = "checkpoints = true"), trillium)
-            @test_throws "needs `mpi`" job(spec_text(RUNS * "ranks = 8\n"), trillium)
+            # a run with ranks that names no recipe gets the site's default; a site without one refuses it
+            mspec(extra) = "name = \"m\"\n[site.trillium]\ntime = \"1:00:00\"\n[site.local]\nthreads = 1\n[site.cluster]\ntime = \"0:10:00\"\n" *
+                           "[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n" * extra
+            r = only(job(mspec("ranks = 8\n"), trillium).runs)
+            @test r.mpi == "system" && r.envdir == "envs/default-mpi-system" && r.threads == 24
+            @test only(job(mspec(""), trillium).runs).mpi == ""                     # no ranks, no MPI
+            @test only(job(mspec("mpi = \"default\"\n"), trillium).runs).mpi == "system"
+            @test only(job(mspec("ranks = 8\nmpi = \"jll\"\n"), trillium).runs).mpi == "jll"
+            @test only(job(mspec("ranks = 2\n"), loc).runs).mpi == "abi"
+            @test load_site("cluster").mpi_default === nothing
+            @test_throws "names no default" job(mspec("ranks = 2\n"), load_site("cluster"))
+            @test_throws "names no default" job(mspec("mpi = \"default\"\n"), load_site("cluster"))
             @test_throws "milestone 4" job(spec_text(RUNS * "julia = \"+1.13\"\n"), trillium)
             @test_throws "no variant" job(spec_text(RUNS * "variant = \"base\"\n"), trillium)
             # a spec written for one site names it, and has no site tables
@@ -334,6 +350,11 @@ end
             @test_throws "in [arch]; it has zen" profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen3\"\n")
             @test_throws "unknown key `arhc`" profile("queues = [{ partition = \"p\", arhc = \"zen\" }]\n")
             @test_throws "queue p: no architecture" profile("queues = [{ partition = \"p\", arch = \"zen\" }]\n")
+            # MPI recipes: a default, and a binary by its name in MPIPreferences
+            @test profile("[mpi]\ndefault = \"a\"\n[mpi.a]\nbinary = \"MPIABI_jll\"\n").mpi_default == "a"
+            @test_throws "`default` names one of the recipes" profile("[mpi]\ndefault = \"b\"\n[mpi.a]\nbinary = \"jll\"\n")
+            @test_throws "`binary` is" profile("[mpi.a]\nbinary = \"mpich\"\n")
+            @test sym.mpi_default == "system" && sym.mpi["system"].preferences["abi"] == "MPIABI" && isempty(sym.mpi["hpcx"].preferences)
             @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
             odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
             @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"

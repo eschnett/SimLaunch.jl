@@ -18,7 +18,7 @@ end
 "How MPI runs are set up and launched on a site."
 struct MPIRecipe
     name::String
-    binary::String                    # "jll": MPICH_jll; "system": the site's MPI
+    binary::String                    # "jll": MPICH_jll; another binary of MPIPreferences, such as "MPIABI_jll"; "system": the site's MPI
     launcher::String                  # "srun", or "mpiexec": the binary's own
     launcher_args::Vector{String}
     multi_node::Bool
@@ -59,6 +59,7 @@ struct Site
     queues::Vector{Queue}             # in the order of preference
     gpu::Union{GPUs,Nothing}
     mpi::Dict{String,MPIRecipe}
+    mpi_default::Union{String,Nothing} # the recipe of a run that names none
     julia_bin::String
     depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
@@ -187,7 +188,7 @@ function load_site(name::AbstractString)
                 slurm === nothing ? false : get(slurm, "partition", true),
                 slurm !== nothing && haskey(slurm, "max_time") ? parse_time(slurm["max_time"]) : nothing,
                 cores, numa, whole, header, queues, gpu,
-                read_recipes(get(conf, "mpi", Dict{String,Any}()), file),
+                read_recipes(get(conf, "mpi", Dict{String,Any}()), file)...,
                 get(julia, "bin", "julia"),
                 get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
@@ -220,13 +221,20 @@ function read_queues(tables, archs, file)
     end
 end
 
+"""
+The MPI recipes of a profile, `[mpi.<name>]`, and its default: `default` in
+`[mpi]` names the recipe of a run that asks for ranks and names none.
+"""
 function read_recipes(tables, file)
     recipes = Dict{String,MPIRecipe}()
     for (name, t) in tables
+        name == "default" && continue
         checkname("$file: an MPI recipe's name", name)
+        t isa AbstractDict || fail("$file, [mpi]: `$name` is not a recipe; a recipe is a table [mpi.$name]")
         binary = get(t, "binary", name)
-        binary in ("jll", "system") ||
-            fail("$file, [mpi.$name]: `binary` is \"jll\" or \"system\", not $(repr(binary))")
+        binary isa AbstractString && (binary in ("jll", "system") || occursin(r"^[A-Za-z0-9]+_jll$", binary)) ||
+            fail("$file, [mpi.$name]: `binary` is \"jll\", a binary of MPIPreferences such as \"MPIABI_jll\", or \"system\", ",
+                 "not $(repr(binary))")
         launcher = get(t, "launcher", "srun")
         launcher in ("srun", "mpiexec") ||
             fail("$file, [mpi.$name]: `launcher` is \"srun\" or \"mpiexec\", not $(repr(launcher))")
@@ -236,7 +244,10 @@ function read_recipes(tables, file)
                                   Dict{String,Any}(get(t, "preferences", Dict{String,Any}())),
                                   Dict{String,String}(k => string(v) for (k, v) in get(t, "env", Dict{String,Any}())))
     end
-    return recipes
+    default = get(tables, "default", nothing)
+    default === nothing || (default isa AbstractString && haskey(recipes, default)) ||
+        fail("$file, [mpi]: `default` names one of the recipes: ", join(sort!(collect(keys(recipes))), ", "))
+    return recipes, default
 end
 
 """

@@ -592,6 +592,61 @@ allow it (on Symmetry `amdq`, since `amddebugq` takes one node). A recipe
 that starts its ranks with `srun` is refused in a GPU job, whose allocation
 is one task; such a job uses a recipe with the binary's own `mpiexec`.
 
+**The default recipe.** A profile's `[mpi]` table names a default, and a run
+with `ranks` that names no recipe gets it, so a spec without `mpi` runs on
+every site. The default is the standard MPI ABI everywhere (MPI.jl's
+`abi = "MPIABI"`): on a cluster the site's own MPI through mpi_abi_wrapper,
+which has the site's interconnect and, where the site's MPI has it, CUDA; on
+the laptop MPIABI_jll, since there is no site MPI to wrap. One ABI means one
+way MPI.jl is built on every site, and the wrapper costs nothing measurable
+(ping-pong on Trillium, Nibi and Fir: the same as Open MPI loaded directly).
+A recipe's `binary` is `"system"` with the keywords of
+`MPIPreferences.use_system_binary` as its `preferences`, `"jll"` for
+MPICH_jll, or the name of another binary MPIPreferences knows.
+
+| Site | Default recipe | Wraps | Launcher | Other recipes |
+| --- | --- | --- | --- | --- |
+| `local` | `abi` | MPIABI_jll (MPICH 5) | its `mpiexec` | `jll` |
+| Symmetry | `system` | HPC-X's Open MPI 4.1.7, CUDA-aware | `mpiexec` | `hpcx` (the same MPI without the wrapper), `jll`, `jll-fork` |
+| Trillium | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+| Trillium GPU | `system` | the same, built with CUDA | `mpiexec` | |
+| Nibi | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+| Fir | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+
+On the Alliance sites the recipe names a copy of Julia patched with
+`setrpaths.sh`, since juliaup's cannot load libraries of the site's software
+stack. Nibi's and Fir's GPU jobs have no recipe with an `mpiexec` yet.
+
+The defaults ran on 2026-11-17 with a toy study whose spec names no recipe:
+a ring exchange and a reduction over four ranks, and in a GPU job two ranks
+on one GPU that exchange host buffers and then device buffers.
+
+| Site | Job | Result |
+| --- | --- | --- |
+| `local` | L20261117-135044 | 4 ranks, MPIABI_jll |
+| Symmetry, AMD node | 601884 on cn107 | 4 ranks, the wrapper around HPC-X |
+| Symmetry, H200 | 601886 on cn113 | host and device buffers |
+| Trillium | 2878504 on tri0518 | 4 ranks, the wrapper around Open MPI 4.1.5 |
+| Trillium GPU, H100 | 1355034 on trig0001 | host and device buffers |
+| Nibi | 27652961 on c249 | 4 ranks; precompile job 27652919 |
+| Fir | not run | its login node could not read Julia's library that day (a Lustre error) |
+
+What these runs found:
+
+- **Device buffers need the UCX that knows GPU memory.** On Trillium GPU
+  the first job (1355026) passed with host buffers and crashed in UCX with
+  device buffers. Loading `cuda/12.9` beside `StdEnv/2023` swaps that UCX
+  in, under the same Open MPI and the same wrapper; the recipe names both.
+- **MPI.jl's `has_cuda()` says false through the wrapper** on both GPU
+  sites, although device buffers work: the wrapper does not pass Open MPI's
+  own query on. A code that asks before it hands MPI a device buffer needs
+  `JULIA_MPI_HAS_CUDA=true`; no recipe sets it yet.
+- **A precompile job that waits holds the site's lock.** Symmetry's GPU
+  precompile job waited 14 minutes in `h200debugq` behind the group's
+  limit, and every other `prepare` on Symmetry waited with it. The lock is
+  per site and dates from the shared depot; per study and architecture
+  would do now.
+
 **MPI with GPUs** ran on Symmetry on 2026-11-16 (job 601126, cn111, two
 H200s): a toy study, two ranks with one GPU each, exchanging a small and a
 32 MiB message and checking what arrives.
@@ -1235,7 +1290,8 @@ and for clusters that are down.
        needs a convention for a tiny size;
      - the same recipe names on every site (`jll`, `system`), with the
        launcher for a GPU job chosen by the tool;
-     - MPI recipes for `trillium-gpu`, which has none.
+     - MPI recipes for the GPU jobs of Nibi and Fir, whose `system` recipe
+       starts its ranks with `srun`.
 
 **Open questions for Erik:**
 

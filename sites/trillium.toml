@@ -27,6 +27,9 @@ modules = []                           # a pure Julia job needs none
 precompile_tasks = 8                   # login nodes are shared
 compute_internet = false               # prepare fetches everything; jobs run offline
 
+[mpi]
+default = "system"                     # for a run that names no recipe
+
 [mpi.jll]                              # MPICH_jll: six times slower between nodes than the system's
 launcher = "srun"
 launcher_args = ["--mpi=pmi2"]

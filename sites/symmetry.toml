@@ -59,6 +59,9 @@ arch = "amd"                           # the CPU nodes; compiled in a job, as th
 precompile_time = "0:30:00"
 compute_internet = true
 
+[mpi]
+default = "system"                     # for a run that names no recipe
+
 # MPICH_jll under srun; the variable keeps MPICH from crashing in its first collective.
 [mpi.jll]
 launcher = "srun"
@@ -71,11 +74,26 @@ binary = "jll"
 launcher = "mpiexec"
 env = { HYDRA_LAUNCHER = "fork", MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE = "0", OMP_NUM_THREADS = "1" }
 
-# HPC-X's Open MPI, CUDA-aware, under its own mpiexec. Ran on CPU nodes and with two
-# H200s (device buffers handed to MPI) on 2026-11-16.
+# HPC-X's Open MPI 4.1.7, CUDA-aware, through mpi_abi_wrapper (MPI.jl's abi "MPIABI"),
+# under its own mpiexec: for CPU and for GPU jobs, on one node or several. Ran on an AMD
+# node and on an H200 with device buffers on 2026-11-17 (jobs 601884, 601886).
 [mpi.system]
 modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
+multi_node = true
+env = { OMP_NUM_THREADS = "1" }
+[mpi.system.preferences]
+library_names = ["/home/eschnetter/claude/hpcx-2.20-mpi-abi/lib/libmpi_abi.so"]
+mpiexec = "/home/eschnetter/claude/hpcx-2.20-mpi-abi/bin/mpiexec"
+abi = "MPIABI"
+
+# The same Open MPI loaded by MPI.jl itself, without the wrapper. Ran on CPU nodes and
+# with two H200s (device buffers handed to MPI) on 2026-11-16, then under the name `system`.
+[mpi.hpcx]
+binary = "system"
+modules = ["nvhpc-hpcx-cuda12/24.9"]
+launcher = "mpiexec"
+launcher_args = ["--bind-to", "none"]
 multi_node = true
 env = { OMP_NUM_THREADS = "1" }

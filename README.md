@@ -128,7 +128,8 @@ a spec. Further fields, in short:
 | --- | --- |
 | `env = "test+cuda"` | kinds joined by `+`: `cuda`, `metal`, `test` (the test dependencies), `mpi` |
 | `variant = "base"` | another version of the package, added by `snapshot --variant base=<directory>` |
-| `ranks = 8`, `mpi = "jll"` | MPI ranks, started by a recipe of the site's profile; `threads` is then per rank |
+| `ranks = 8` | MPI ranks, started by the site's default MPI recipe; `threads` is then per rank |
+| `mpi = "jll"` | another MPI recipe of the site's profile |
 | `nodes = 2` | in `resources`: the job's nodes; in a run: the nodes its ranks are spread over |
 | `placement = "numa"` | one NUMA domain per rank, with `numactl` |
 | `pin = true` | `JULIA_EXCLUSIVE=1` under `srun --cpu-bind=none`; not with `ranks` or `placement` |
