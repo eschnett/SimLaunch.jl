@@ -149,14 +149,19 @@ function prepare_script(site::Site, study, needed)
     return String(take!(io))
 end
 
-lock_dir(site::Site) = joinpath(site.code, "precompile.lock")
+"""
+The precompile lock of a study's depot for one architecture: it is that depot
+a precompile job writes, so the lock is the depot's, and another study or
+another architecture is not kept waiting.
+"""
+lock_dir(site::Site, study, arch) = joinpath(study_depot(site, study, arch), "precompile.lock")
 precompile_log(site::Site, study, jobid) = joinpath(study_scratch(site, study), "logs", "precompile-$jobid.out")
 
 """
 The batch script that precompiles `group`, combinations for one
 architecture, on a compute node that has it: in a queue of the kind the jobs
 will use whose nodes are of that architecture. Its exit trap gives the
-site's precompile lock back.
+depot's precompile lock back.
 """
 function precompile_script(site::Site, study, group)
     gpu, arch = first(group).gpu, first(group).arch
@@ -181,7 +186,7 @@ function precompile_script(site::Site, study, group)
           """)
     prepare_preamble(io, site, study, arch)
     print(io, """
-          LOCK=$(shpath(lock_dir(site)))
+          LOCK=$(shpath(lock_dir(site, study, arch)))
 
           # give the lock back, if it is still this job's
           unlock() {
@@ -217,35 +222,36 @@ function wait_job(site::Site, jobid; what = "job", poll = 20, io::IO = stdout)
 end
 
 """
-Take the site's precompile lock: a directory, since `mkdir` is atomic, that
+Take the precompile lock of a study's depot for one architecture: a
+directory, since `mkdir` is atomic, that
 holds the ID of the precompile job. Waits for a job that holds it; a lock
 whose job the queue no longer knows is stale and is taken over.
 """
-function acquire_lock(site::Site; poll = 20, io::IO = stdout)
-    lock = q(lock_dir(site))
+function acquire_lock(site::Site, study, arch; poll = 20, io::IO = stdout)
+    lock = q(lock_dir(site, study, arch))
     while true
-        out = strip(readsite(site, "mkdir -p $(q(site.code)) && if mkdir $lock 2>/dev/null; then echo acquired; " *
+        out = strip(readsite(site, "mkdir -p $(q(study_depot(site, study, arch))) && if mkdir $lock 2>/dev/null; then echo acquired; " *
                                    "elif [ -f $lock/jobid ]; then cat $lock/jobid; " *
                                    "elif [ -n \"\$(find $lock -maxdepth 0 -mmin +2 2>/dev/null)\" ]; then echo stale; " *
                                    "else echo starting; fi"))
         out == "acquired" && return
         out == "starting" &&
-            fail("another `simlaunch prepare` is submitting a precompile job on $(site.name) just now; try again in a minute. ",
-                 "If none is running, remove $(lock_dir(site)) there.")
+            fail("another `simlaunch prepare` is submitting a precompile job for study $study on $(site.name) just now; ",
+                 "try again in a minute. If none is running, remove $(lock_dir(site, study, arch)) there.")
         if out != "stale"
             if !isempty(job_state(site, out))
-                println(io, "precompile job $out holds the lock on $(site.name); waiting for it")
+                println(io, "precompile job $out compiles study $study for $arch on $(site.name) already; waiting for it")
                 wait_job(site, out; what = "precompile job", poll, io)
                 sleep(2)                           # its exit trap removes the lock
                 continue
             end
-            println(io, "the precompile lock on $(site.name) names job $out, which has ended: taking it over")
+            println(io, "the precompile lock of study $study for $arch on $(site.name) names job $out, which has ended: taking it over")
         end
         runsite(site, "rm -rf $lock")
     end
 end
 
-release_lock(site::Site) = runsite(site, "rm -rf " * q(lock_dir(site)))
+release_lock(site::Site, study, arch) = runsite(site, "rm -rf " * q(lock_dir(site, study, arch)))
 
 "Precompile `needed` in jobs on the compute nodes, one job per architecture and kind of node."
 function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = stdout)
@@ -254,10 +260,10 @@ function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = st
         precompile_where(site, arch) == "compute" || continue
         missing_combos() = (have = prepared(site, study, arch); [c for c in needed if c.arch == arch && c.gpu == gpu && combo_line(c) ∉ have])
         isempty(missing_combos()) && continue
-        acquire_lock(site; poll, io)
+        acquire_lock(site, study, arch; poll, io)
         group = missing_combos()                   # the job that held the lock may have made them
         if isempty(group)
-            release_lock(site)
+            release_lock(site, study, arch)
             continue
         end
         jobid = try
@@ -270,10 +276,10 @@ function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = st
             out = readsite(site, "sbatch --parsable $(site.export_env ? "" : "--export=NONE ")" * q(remote))
             id = String(first(split(strip(out), ';')))
             occursin(r"^\d+$", id) || fail("sbatch did not return a job ID: $(repr(out))")
-            runsite(site, "echo $(q(id)) > " * q(joinpath(lock_dir(site), "jobid")))
+            runsite(site, "echo $(q(id)) > " * q(joinpath(lock_dir(site, study, arch), "jobid")))
             id
         catch
-            release_lock(site)
+            release_lock(site, study, arch)
             rethrow()
         end
         log = precompile_log(site, study, jobid)

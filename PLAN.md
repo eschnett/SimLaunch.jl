@@ -444,11 +444,18 @@ immutable as its sources, and `clean` removes them with the study. The cost
 is disk space in the code root: each study compiles its dependencies again
 (XCTS-harmonic on Trillium: 104 MB, half a minute).
 
-**The precompile lock.** Two of the tool's jobs never precompile on one site
-at once. The lock is a directory on the site, made by `prepare` over
+**The precompile lock.** Two of the tool's jobs never precompile into one
+depot at once. The lock is a directory in the study's depot for the
+architecture, `depot-<architecture>/precompile.lock`, made by `prepare` over
 ssh (`mkdir` is atomic), holding the precompile job's ID and removed by that
 job's exit trap; a lock whose job `squeue` no longer knows is stale and is
-taken over. The lock binds only what the tool submits. A hand-written script
+taken over. It is held from before the job is submitted, so also while the
+job waits in the queue. Another study, or the same study's jobs for another
+architecture, are not kept waiting: the lock was one per site while all
+studies shared a depot, and a job that waited 14 minutes in `h200debugq`
+then held up every other `prepare` on Symmetry. What a precompile job
+fetches into the site's own depot (packages, artifacts) is not locked, as
+it never was against the login node's part of a `prepare`. The lock binds only what the tool submits. A hand-written script
 that precompiles, such as `ci/full-suite-symmetry.sh` before it is migrated,
 does not see it.
 
@@ -641,11 +648,10 @@ What these runs found:
   sites, although device buffers work: the wrapper does not pass Open MPI's
   own query on. A code that asks before it hands MPI a device buffer needs
   `JULIA_MPI_HAS_CUDA=true`; no recipe sets it yet.
-- **A precompile job that waits holds the site's lock.** Symmetry's GPU
+- **A precompile job that waited held the site's lock.** Symmetry's GPU
   precompile job waited 14 minutes in `h200debugq` behind the group's
   limit, and every other `prepare` on Symmetry waited with it. The lock is
-  per site and dates from the shared depot; per study and architecture
-  would do now.
+  now one per study and architecture (see "The precompile lock").
 
 **MPI with GPUs** ran on Symmetry on 2026-11-16 (job 601126, cn111, two
 H200s): a toy study, two ranks with one GPU each, exchanging a small and a
@@ -1274,8 +1280,8 @@ and for clusters that are down.
      same day: precompile job 601842 and job 601843, both with
      `--exclude=cn112`, on cn107 (EPYC 7543, Zen 3), which loaded caches
      built for `znver2` from `depot-amd`. `largememq` has not run: cn112
-     was busy, and a precompile job waiting there would hold the site's
-     precompile lock against every other `prepare`. Not seen yet: a Zen 2
+     was busy, and a precompile job waiting there would then have held the
+     site's precompile lock against every other `prepare`. Not seen yet: a Zen 2
      node loading what a Zen 3 node compiled; a job on cn111, whose Xeon Gold 6442Y must accept what
      cn113 compiled; if it does not, the job stops at its precompile check.
    - Open, each to be designed:

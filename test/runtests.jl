@@ -541,7 +541,10 @@ end
                      """)
             @test_throws "not prepared" submit("toy", f; site = "cluster", io = devnull)
             # a lock left by a job that has ended is taken over
-            mkpath(lock_dir(cluster)); write(joinpath(lock_dir(cluster), "jobid"), "999\n")
+            mine, other = lock_dir(cluster, "toy", "gpu"), lock_dir(cluster, "other", "gpu")
+            @test mine == joinpath(ccode, "depot-gpu", "precompile.lock")        # the lock is the depot's
+            mkpath(mine); write(joinpath(mine, "jobid"), "999\n")
+            mkpath(other); write(joinpath(other, "jobid"), "999\n")            # another study's lock is not this one's
             out = IOBuffer()
             needed = redirect_stdout(devnull) do
                 prepare("toy"; site = "cluster", specs = [f], poll = 0.5, io = out)
@@ -550,7 +553,10 @@ end
             text = String(take!(out))                                            # it says how the job ended, and that it is done
             @test occursin(r"precompile job \d+ on cluster: finished, \d+:\d\d after it was submitted\n", text)
             @test endswith(text, "study toy is prepared on cluster\n")
-            @test !ispath(lock_dir(cluster))                                     # given back by the job
+            @test occursin("names job 999, which has ended: taking it over", text)
+            @test !ispath(mine)                                                  # given back by the job
+            @test read(joinpath(other, "jobid"), String) == "999\n"             # and the other study's was left alone
+            rm(joinpath(study_code(cluster, "other")); recursive = true)
             @test readlines(joinpath(ccode, "depot-gpu", "prepared")) == ["envs/default-dates\t\tgpu"]
             # the caches are the study's own; the packages are the site's
             @test "Toy" in readdir(joinpath(ccode, "depot-gpu", "compiled", "v$(VERSION.major).$(VERSION.minor)"))
