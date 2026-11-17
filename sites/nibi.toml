@@ -22,10 +22,17 @@ request = "--gpus=h100:%d"
 cores = 12                             # per GPU; at most 14
 mem = "120G"                           # per GPU; at most about 250G
 max = 8
+arch = "h100"
+
+# Architectures: name = JULIA_CPU_TARGET. The login node (Sapphire Rapids) has its
+# own, so both kinds of node compile in a job.
+[arch]
+granite = "native"                     # CPU nodes: Xeon 6972P (Granite Rapids)
+h100 = "native"                        # GPU nodes: Xeon 8570
 
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
-precompile_on = "compute"              # login is Sapphire Rapids, the compute nodes Granite Rapids
+arch = "granite"
 precompile_time = "0:30:00"
 compute_internet = true

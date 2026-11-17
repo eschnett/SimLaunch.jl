@@ -259,8 +259,8 @@ end
 Run the spec's `[combine]` script for each run: it gets the run's job
 directories, oldest first, as its last arguments and writes into a new
 directory `combined-<n>/` of the run, which is then made read-only. Runs on
-the site's login node, with a depot of its own in front of the study's, so
-that the study's caches stay untouched. Returns the directories written.
+the site's login node, with a depot of its own in front of the study's for
+the login node's architecture, so that the study's caches stay untouched. Returns the directories written.
 """
 function combine(study::AbstractString, spec::AbstractString; site::AbstractString, only_runs = String[], io::IO = stdout)
     s = load_site(site)
@@ -279,7 +279,7 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
             [ \${#dirs[@]} -gt 0 ] || { echo "run $run has no job directories" >&2; exit 1; }
             n=1; while [ -e "combined-\$n" ]; do n=\$((n + 1)); done
             mkdir "combined-\$n"; cd "combined-\$n"
-            export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study))):
+            export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study, s.login_arch))):
             unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET
             $(shpath(s.julia_bin)) --startup-file=no --project=$(shpath(joinpath(code, r.envdir))) $(shpath(joinpath(code, "src", job.project, job.combine[1]))) $(join(q.(job.combine[2:end]), " ")) "\${dirs[@]}" > combine.log 2>&1 || { cat combine.log >&2; exit 1; }
             cd ..; chmod -R a-w "combined-\$n"; echo "\$PWD/combined-\$n"
@@ -356,7 +356,7 @@ function after(study::AbstractString, spec::AbstractString; site::AbstractString
             STUDY=$(q(study)) SPEC=$(q(job.name)) PROJECT=$(shpath(project)) SCRATCH=\$PWD JOBID=\$ids SIMLAUNCH_JOBDIRS="\${dirs[*]}"
             export STUDY SPEC PROJECT SCRATCH JOBID SIMLAUNCH_JOBDIRS
             # as `combine`: Julia started here compiles into a depot of its own, not into the study's
-            export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study))):
+            export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study, s.login_arch))):
             unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET
             bash -c $(q(job.after)); rc=\$?
             if [ \$rc != 0 ]; then echo "the [after] command failed with exit code \$rc"; fi

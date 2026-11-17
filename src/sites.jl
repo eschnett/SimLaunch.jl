@@ -33,8 +33,7 @@ struct GPUs
     mem::Union{String,Nothing}        # per GPU, such as "64G"; nothing: not asked for
     max::Union{Int,Nothing}           # per job
     queues::Vector{Queue}             # in the order of preference
-    precompile_on::Union{String,Nothing}   # where the site's GPU nodes differ from its CPU nodes
-    cpu_target::Union{String,Nothing}      # JULIA_CPU_TARGET on the GPU nodes
+    arch::String                      # the GPU nodes' architecture: a key of the site's `archs`
 end
 
 struct Site
@@ -60,9 +59,10 @@ struct Site
     julia_bin::String
     depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
-    precompile_on::String
+    archs::Dict{String,String}        # architectures: name => JULIA_CPU_TARGET; "": the node's own CPU
+    arch::String                      # the CPU nodes' architecture
+    login_arch::String                # the login node's
     precompile_tasks::Union{Int,Nothing}
-    cpu_target::Union{String,Nothing} # JULIA_CPU_TARGET: one cache for a site whose nodes are several CPU types
     precompile_time::Int              # seconds, for a precompile job on a compute node
     compute_internet::Bool
     registry_update::Bool
@@ -71,7 +71,55 @@ end
 
 islocal(site::Site) = site.host === nothing
 
-const SITE_TABLES = ["name", "connect", "paths", "slurm", "julia", "env", "mpi"]
+const SITE_TABLES = ["name", "connect", "paths", "slurm", "julia", "env", "mpi", "arch"]
+
+"""
+The architectures of a profile: `[arch]` gives each a name and its
+`JULIA_CPU_TARGET` (`"native"`: the node's own CPU), and the CPU nodes
+(`[julia] arch`), the GPU nodes (`[slurm.gpu] arch`) and the login node
+(`[julia] login_arch`) each name one. Nodes with the same architecture share
+their compiled caches; a job sees no others. Without `[arch]` a site has one
+architecture, `default`. A login node that names none has its own, `login`,
+and compiles nothing that a job uses.
+"""
+function read_archs(conf, file; cpu_nodes::Bool, gpu_nodes::Bool)
+    julia = get(conf, "julia", Dict{String,Any}())
+    g = get(get(conf, "slurm", Dict{String,Any}()), "gpu", Dict{String,Any}())
+    for (table, name) in ((julia, "[julia]"), (g, "[slurm.gpu]")), key in ("precompile_on", "cpu_target")
+        haskey(table, key) &&
+            fail("$file, $name: `$key` is gone; name the site's architectures in [arch], and give the nodes' as `arch`")
+    end
+    if !haskey(conf, "arch")
+        for (table, name) in ((julia, "[julia]"), (g, "[slurm.gpu]")), key in ("arch", "login_arch")
+            haskey(table, key) && fail("$file, $name: `$key` names an architecture, but the profile has no [arch] table")
+        end
+        return Dict("default" => ""), "default", "default", "default"
+    end
+    archs = Dict{String,String}()
+    for (name, target) in conf["arch"]
+        checkname("$file: an architecture's name", name)
+        target isa AbstractString && occursin(r"^[A-Za-z0-9_.,;()+-]+$", target) ||
+            fail("$file, [arch]: `$name` is a JULIA_CPU_TARGET such as \"znver2;znver4,clone_all\", or \"native\"")
+        archs[name] = target == "native" ? "" : target
+    end
+    function named(table, key, where, required)
+        if !haskey(table, key)
+            required && fail("$file, $where: `$key` must name one of the architectures in [arch]")
+            return nothing
+        end
+        haskey(archs, table[key]) ||
+            fail("$file, $where: no architecture $(repr(table[key])) in [arch]; it has ", join(sort!(collect(keys(archs))), ", "))
+        return table[key]
+    end
+    gpu = gpu_nodes ? named(g, "arch", "[slurm.gpu]", true) : nothing
+    cpu = cpu_nodes ? named(julia, "arch", "[julia]", true) : something(named(julia, "arch", "[julia]", false), gpu)
+    login = named(julia, "login_arch", "[julia]", false)
+    if login === nothing
+        login = "login"
+        get!(archs, "login", "")
+    end
+    return archs, cpu, something(gpu, cpu), login
+end
 
 function load_site(name::AbstractString)
     checkname("a site name", name)
@@ -95,6 +143,11 @@ function load_site(name::AbstractString)
     end
 
     slurm = get(conf, "slurm", nothing)
+    slurm_gpu = slurm === nothing ? nothing : get(slurm, "gpu", nothing)
+    archs, arch, gpu_arch, login_arch =
+        read_archs(conf, file; cpu_nodes = slurm === nothing || haskey(slurm, "node"), gpu_nodes = slurm_gpu !== nothing)
+    slurm === nothing && arch != login_arch &&
+        fail("$file: a site without a queue compiles where it runs; give `login_arch = $(repr(arch))` in [julia]")
     queues = Queue[]
     cores, numa, whole, header, gpu = Sys.CPU_THREADS, 1, false, String[], nothing
     if slurm !== nothing
@@ -112,8 +165,7 @@ function load_site(name::AbstractString)
         if g !== nothing
             occursin("%d", g["request"]) || fail("$file: [slurm.gpu] request needs a %d for the number of GPUs")
             gpu = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing),
-                       get(g, "max", nothing), read_queues(get(g, "queues", [])), get(g, "precompile_on", nothing),
-                       get(g, "cpu_target", nothing))
+                       get(g, "max", nothing), read_queues(get(g, "queues", [])), gpu_arch)
             haskey(g, "default_queue") &&
                 fail("$file: `default_queue` is gone; list the queues in the order of preference")
         end
@@ -136,9 +188,8 @@ function load_site(name::AbstractString)
                 get(julia, "bin", "julia"),
                 get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
-                get(julia, "precompile_on", "login"),
+                archs, arch, login_arch,
                 get(julia, "precompile_tasks", nothing),
-                get(julia, "cpu_target", nothing),
                 parse_time(get(julia, "precompile_time", "0:30:00")),
                 get(julia, "compute_internet", true),
                 get(julia, "registry_update", true),
@@ -218,12 +269,17 @@ function choose_queue(site::Site, queues; name = nothing, what, busy = Set{Strin
     fail("$what, which no queue of $(site.name) takes: ", join(reasons, "; "))
 end
 
-"Where a combination for CPU or GPU nodes is precompiled: \"login\" or \"compute\"."
-precompile_where(site::Site, gpu::Bool) =
-    gpu && site.gpu !== nothing ? something(site.gpu.precompile_on, site.precompile_on) : site.precompile_on
+"The architecture of the site's CPU or GPU nodes: its name in the profile."
+site_arch(site::Site, gpu::Bool) = gpu && site.gpu !== nothing ? site.gpu.arch : site.arch
+
+"""
+Where a combination for CPU or GPU nodes is precompiled: \"login\" if the
+login node has their architecture, else \"compute\", in a job.
+"""
+precompile_where(site::Site, gpu::Bool) = site_arch(site, gpu) == site.login_arch ? "login" : "compute"
 
 "`JULIA_CPU_TARGET` for the site's CPU or GPU nodes; empty: Julia's default, the node's own CPU."
-cpu_target(site::Site, gpu::Bool) = something(gpu && site.gpu !== nothing ? site.gpu.cpu_target : site.cpu_target, "")
+cpu_target(site::Site, gpu::Bool) = site.archs[site_arch(site, gpu)]
 
 known_sites() = sort!([splitext(f)[1] for f in readdir(sites_dir()) if endswith(f, ".toml")])
 

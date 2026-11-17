@@ -12,7 +12,7 @@ code = "/home/eschnetter/claude/studies"
 scratch = "/mnt/beegfs/eschnetter/claude/studies"
 
 [slurm]
-# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes: see cpu_target below.
+# The AMD partitions mix Zen 2, Zen 3 and Zen 4c nodes: see [arch] below.
 node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
 queues = [                             # in the order of preference: amddebugq starts much sooner
   { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1 },
@@ -26,6 +26,7 @@ request = "--gres=gpu:h200:%d"
 cores = 8                              # per GPU; more often blocks on the group's limits
 mem = "64G"                            # per GPU; always given, the default is 21 GB per core
 max = 8
+arch = "h200"
 queues = [
   { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },   # to get started; never chained
   { partition = "h200q",      max_time = "24:00:00" },
@@ -34,13 +35,20 @@ queues = [
   { partition = "h200preq",   max_time = "24:00:00", preempt = true, prefer = true },
 ]
 
+# Architectures: name = JULIA_CPU_TARGET. Nodes of one architecture share a study's
+# compiled caches, and a job sees no others. The login node (Intel) has its own.
+[arch]
+# One cache for the three AMD generations (EPYC 7532, 7543, 8534P): without the
+# Zen 2 part, what cn112 compiles is rejected on a Zen 2 node (jobs 599483, 599484).
+# No `generic` part: a node that cannot run Zen 2 code must refuse the cache, not
+# run it slowly, as the H200 nodes did with FastPower (jobs 601139, 601141).
+amd = "znver2;znver4,clone_all"
+h200 = "native"                        # Sapphire Rapids: cn111 is a Xeon Gold 6442Y, cn113 a Platinum 8452Y
+
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
-precompile_on = "compute"              # the login node is Intel, the compute nodes are AMD
-# One cache for the three AMD generations (EPYC 7532, 7543, 8534P): without
-# it, what cn112 compiles is rejected on a Zen 2 node (jobs 599483, 599484).
-cpu_target = "generic;znver2,clone_all;znver4,clone_all"
+arch = "amd"                           # the CPU nodes; compiled in a job, as the login node is Intel
 precompile_time = "0:30:00"
 compute_internet = true
 

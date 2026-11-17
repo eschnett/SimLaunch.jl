@@ -68,9 +68,11 @@ profile directory; the tests use both.
   `src/spec.jl`), never ignored.
 - `clean` and `--old-checkpoints` delete on a site: ask Erik first, as for
   a job. Never pass `yes = true` or `--yes` outside the tests.
-- A study's compiled caches are its own: jobs and `prepare` run with
-  `JULIA_DEPOT_PATH="<study>/depot:"`, never with `~/.julia` (PLAN.md,
-  "Prepare").
+- A study's compiled caches are its own, one depot per architecture of the
+  site's profile (`[arch]`): jobs and `prepare` run with
+  `JULIA_DEPOT_PATH="<study>/depot-<architecture>:"`, never with `~/.julia`
+  or another architecture's depot (PLAN.md, "Site profiles" and "Prepare").
+  A target in `[arch]` does not start with `generic`.
 - Cluster facts live in `sites/*.toml`. On a cluster, follow that cluster's
   skill: check the connection first, and never open one that needs MFA.
 - Submitting a job, or anything else on a cluster, is visible to others: ask

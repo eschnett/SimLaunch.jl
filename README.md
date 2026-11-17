@@ -58,8 +58,10 @@ simlaunch submit s1 jobs/s1-sweep.toml --site trillium
 under the same directory layout. A study is never rewritten: a changed source
 needs a new study name.
 
-Each study has its own compiled caches on a site (`<code>/<study>/depot/`),
-so preparing one study does not disturb another. Each site resolves its own
+Each study has its own compiled caches on a site, one depot per architecture
+of the site's nodes (`<code>/<study>/depot-<architecture>/`), so preparing one
+study does not disturb another, and a job loads only code compiled for its
+kind of node. Each site resolves its own
 package versions. `prepare` keeps a copy of every
 manifest a site wrote in `~/.cache/simlaunch/.sites/` and prints the packages
 whose versions differ from the study's other prepared sites.

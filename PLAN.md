@@ -193,7 +193,7 @@ queues = [                             # in the order of preference
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []                           # a pure Julia job needs none
-precompile_on = "login"               # login node is Zen 5 like the compute nodes
+# no [arch] table: one architecture, so the login node compiles for the compute nodes
 compute_internet = false               # prepare fetches everything; jobs run offline
 
 [mpi.system]                           # Open MPI 4.1.5 through mpi_abi_wrapper
@@ -209,9 +209,9 @@ abi = "MPIABI"
 JULIA_PKG_OFFLINE = "true"
 ```
 
-The other profiles differ where the table above says they do. Symmetry's has
-`precompile_on = "compute"`, which makes `prepare` submit a short precompile
-job, and per-partition rules: `amddebugq` up to an hour, `amdq` beyond,
+The other profiles differ where the table above says they do. Symmetry's
+names two architectures, neither of them the login node's, which makes
+`prepare` submit a short precompile job for each, and per-partition rules: `amddebugq` up to an hour, `amdq` beyond,
 `h200preq` only for runs that checkpoint (`preempt = true`), and `h200debugq`
 never chained (`chain = false`).
 Nibi's and Fir's have `partition = false`, since their submit filters choose.
@@ -243,11 +243,50 @@ spread over several nodes. Symmetry has three: `jll` (MPICH_jll under
 `srun --mpi=pmi2`), `jll-fork` (MPICH_jll's `mpiexec` with Hydra forking the
 ranks, for one node and for GPU jobs) and `system` (HPC-X).
 
-Where the GPU nodes are another CPU than the CPU nodes, the table says where
-to precompile for them. Fir's login and CPU nodes are both Zen 5 and its GPU
-nodes Zen 4, so its profile has `precompile_on = "login"` under `[julia]` and
-`precompile_on = "compute"` under `[slurm.gpu]`. Symmetry's H200 nodes are
-Intel, a third CPU type besides its login node and its AMD nodes.
+**Architectures.** A site's nodes are not one CPU type, and a compiled cache
+is for one. A profile names its architectures in `[arch]`, each with its
+`JULIA_CPU_TARGET` (`"native"` for the node's own CPU), and says which one
+the CPU nodes (`[julia] arch`), the GPU nodes (`[slurm.gpu] arch`) and the
+login node (`[julia] login_arch`) have:
+
+```toml
+[arch]
+amd = "znver2;znver4,clone_all"        # Symmetry's EPYC 7532, 7543 and 8534P nodes
+h200 = "native"                        # its H200 nodes: Sapphire Rapids
+
+[julia]
+arch = "amd"
+
+[slurm.gpu]
+arch = "h200"
+```
+
+- A study has one depot of compiled caches per architecture, and a job sees
+  only its own (see "The study's depot").
+- `prepare` compiles on the login node for the nodes that share its
+  architecture, and in a job on a node of the kind for the others. Fir's
+  login and CPU nodes are both Zen 5 (`login_arch = "zen5"`) and its GPU
+  nodes Zen 4. A login node that names no architecture has its own,
+  `login`: Symmetry's is Intel, and none of its nodes is.
+- A profile without `[arch]` has one architecture, `default`, as Trillium's
+  two sites, whose login nodes are their compute nodes' CPU.
+- An architecture need not be one CPU model. Code for a named CPU runs on
+  every CPU with that CPU's features, so neighbouring generations of one
+  vendor can share one: Zen 2 code serves Zen 3; Sapphire Rapids code
+  should serve Granite Rapids. What a newer node loses that way is not
+  measured, so Nibi and Fir keep an architecture per node type for now.
+- A target does not start with `generic`. A node that cannot run the code
+  must refuse the cache, and its job then stops at its precompile check; a
+  `generic` part runs everywhere, slowly and without a word.
+
+The reason, found by TreeAMR on Symmetry on 2026-11-17: there was one depot
+per study, the AMD nodes compiled into it with
+`generic;znver2,clone_all;znver4,clone_all`, and the H200 nodes with their
+own CPU. Julia loads any cache that the host can run, whatever
+`JULIA_CPU_TARGET` says, which only decides what is built. So the H200
+precompile job (601141) found FastPower's cache from the AMD job (601139)
+valid through its `generic` part, built nothing, and the H200 jobs ran
+x86-64 code without FMA.
 
 Trillium's GPU cluster is a Slurm cluster of its own with its own login node,
 so it is a site of its own, `trillium-gpu`. Its `[connect]` table has
@@ -290,7 +329,7 @@ resolves:
   src/HexCGSEM/  src/HexMeshes/  src/SpacetimeMetrics/  …
   variants/<name>/src/…     further versions, for comparisons in one job
   envs/<variant>-<kind>/    environments written by prepare
-  depot/                    the study's Julia depot: its compiled caches
+  depot-<architecture>/     the study's compiled caches, one depot per architecture
   snapshot.toml             what was copied, from where, at which commit
   jobs/                     generated batch scripts
 <scratch root>/<study>/
@@ -357,14 +396,14 @@ flags.
    environment, not `Pkg.test`, whose sandbox resolves and precompiles when
    the job runs.
    Where a site's nodes are several CPU types under one partition, as
-   Symmetry's AMD nodes, the profile's `cpu_target` makes one cache serve
+   Symmetry's AMD nodes, their architecture's target makes one cache serve
    them all (`JULIA_CPU_TARGET`, set for the precompile job and for every
    job).
-4. **Precompile where the profile says**, once for every combination of
+4. **Precompile for each architecture**, once for every combination of
    environment, Julia version and Julia flags the specs name, since
    `--check-bounds=yes` has its own cache. On Trillium, on the login node of
-   the matching cluster. On Symmetry and Nibi, whose login nodes are a
-   different CPU from the compute nodes, `prepare` submits a short precompile
+   the matching cluster. On Symmetry and Nibi, whose login nodes have an
+   architecture of their own, `prepare` submits a short precompile
    job on the target partition, on the node type of the job that will use it.
    `prepare` can be interrupted while that job waits in the queue; run again,
    it finds the job and continues. An environment that a compute node has
@@ -373,10 +412,13 @@ flags.
    be stale (Symmetry, job 600484, which stopped at its check with "not
    precompiled").
 
-**The study's depot.** Every study has a Julia depot of its own on each site,
-`<code root>/<study>/depot/`, and its jobs run with
-`JULIA_DEPOT_PATH="<depot>:"`: the study's depot, then the depots that come
-with Julia, and not `~/.julia`. Its `compiled/` directory holds the study's
+**The study's depot.** Every study has Julia depots of its own on each site,
+one per architecture of the site's profile,
+`<code root>/<study>/depot-<architecture>/`. A job runs with
+`JULIA_DEPOT_PATH="<depot>:"`: the study's depot for its nodes'
+architecture, then the depots that come with Julia, and not `~/.julia` nor
+another architecture's. What the login node compiles for itself while it
+writes the environments goes into the login node's depot. Its `compiled/` directory holds the study's
 precompiled caches; `packages`, `artifacts`, `registries`, `clones` and
 `scratchspaces` are links into the site's depot, since what is installed
 there is written once and never changes. The reason is a failure seen on
@@ -843,8 +885,9 @@ after the run its full size.
 order and writes a new `combined-<n>/`; `simlaunch combine <study> <spec>`
 runs it on the site's login node, with the job directories as its last
 arguments and the new directory as its working directory. It runs with a
-depot of its own in front of the study's, so a login node of another CPU
-compiles there and the study's caches stay untouched. Each combine writes a
+depot of its own in front of the study's depot for the login node's
+architecture, so what it compiles goes there and the study's caches stay
+untouched. Each combine writes a
 new directory, so its output is immutable too. Running it on the laptop
 after a fetch is not implemented.
 
@@ -1104,10 +1147,11 @@ and for clusters that are down.
    - **A cache from one AMD generation is rejected on another.** The first
      precompile job ran on cn112 (EPYC 8534P) and the jobs on EPYC 7532
      nodes, which stopped at their precompile check (599483, 599484). A
-     profile now names `cpu_target`, exported as `JULIA_CPU_TARGET` where
+     profile now names a target, exported as `JULIA_CPU_TARGET` where
      the caches are compiled and where they are used; the marker of what is
-     prepared records it. Symmetry's is
-     `generic;znver2,clone_all;znver4,clone_all`.
+     prepared records it. Symmetry's was
+     `generic;znver2,clone_all;znver4,clone_all`, and is
+     `znver2;znver4,clone_all` since the profiles name architectures.
    - **A file written on a compute node shows on the login node late.**
      `prepare` found no marker right after precompile job 599476 had ended.
      It now looks again for up to a minute.
@@ -1143,6 +1187,21 @@ and for clusters that are down.
    - `prepare` waits for its precompile jobs, but its last line was "precompile
      job … running", which read afterwards as if it had left the job
      behind. It now prints how each job ended and a closing line.
+   - Compiled caches of two CPU types in one depot: see "Architectures" in
+     "Site profiles". A study now has a depot per architecture. Ran on
+     Symmetry on 2026-11-17 with a toy study:
+
+     | Nodes | Jobs | What the job loaded |
+     | --- | --- | --- |
+     | AMD, cn083 (EPYC 7532) | precompile 601812, job 601814 | from `depot-amd` only; caches built for `znver2` and `znver4`, no `generic` |
+     | H200, cn113 (Xeon Platinum 8452Y) | precompile 601816, job 601817 | from `depot-h200` only; caches built for `sapphirerapids`, with AVX-512 |
+
+     The login node's depot holds MPIPreferences and Preferences only.
+     Eight packages are in both jobs' depots, each compiled for its own
+     nodes. The AMD job also ran 8 and 2 MPI ranks under `srun`, each rank
+     on its own NUMA domain and without the `--cpus-per-task` warning.
+     Not seen yet: a job on cn111, whose Xeon Gold 6442Y must accept what
+     cn113 compiled; if it does not, the job stops at its precompile check.
    - Open, each to be designed:
      - a `depot` root in a profile's `[paths]`, since home is small on most
        sites and compiled caches need not live there;

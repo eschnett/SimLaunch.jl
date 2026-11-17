@@ -22,7 +22,7 @@ SITE=symmetry
 CODE=/home/eschnetter/claude/studies/toy2
 PROJECT=/home/eschnetter/claude/studies/toy2/src/Toy
 TOOLS=/home/eschnetter/claude/studies/toy2/tools
-DEPOT=/home/eschnetter/claude/studies/toy2/depot      # the study's compiled caches
+DEPOT=/home/eschnetter/claude/studies/toy2/depot-amd      # the study's compiled caches, for this architecture
 SCRATCH=/mnt/beegfs/eschnetter/claude/studies/toy2
 JULIA="$HOME"/.juliaup/bin/julia
 USE_SLURM=1
@@ -375,7 +375,7 @@ unset JULIA_LOAD_PATH JULIA_PROJECT
 export JULIA_DEPOT_PATH="$DEPOT:"         # the study's depot, then Julia's own; not ~/.julia
 export OPENBLAS_NUM_THREADS=1
 export JULIA_PKG_PRECOMPILE_AUTO=0
-export JULIA_CPU_TARGET='generic;znver2,clone_all;znver4,clone_all'     # as the caches were compiled
+export JULIA_CPU_TARGET='znver2;znver4,clone_all'     # as the caches were compiled
 
 echo "SimLaunch job $JOBID: study $STUDY, spec $SPEC, site $SITE, host $(hostname -s), $(date)"
 lscpu 2>/dev/null | grep -m1 'Model name' || sysctl -n machdep.cpu.brand_string 2>/dev/null || true

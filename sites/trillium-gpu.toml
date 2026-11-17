@@ -31,7 +31,7 @@ queues = [                             # in the order of preference
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
-precompile_on = "login"                # trig-login01 is Zen 4 with H100s, like the compute nodes
+# No [arch] table: one architecture. trig-login01 is Zen 4 with H100s, like the compute nodes, and compiles for them.
 precompile_tasks = 8                   # login nodes are shared
 compute_internet = false               # prepare fetches everything; jobs run offline
 

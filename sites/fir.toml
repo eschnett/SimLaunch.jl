@@ -22,11 +22,17 @@ request = "--gpus=h100:%d"
 cores = 12                             # per GPU: 48 cores for 4 GPUs
 mem = "250G"                           # per GPU; at most about 280G
 max = 4
-precompile_on = "compute"              # the GPU nodes are Zen 4
+arch = "zen4"                          # compiled in a job
+
+# Architectures: name = JULIA_CPU_TARGET.
+[arch]
+zen5 = "native"                        # the login and CPU nodes
+zen4 = "native"                        # the GPU nodes
 
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
-precompile_on = "login"                # login and CPU nodes are both Zen 5
+arch = "zen5"
+login_arch = "zen5"                    # so the login node compiles for the CPU nodes
 precompile_tasks = 8                   # login nodes are shared
 compute_internet = true

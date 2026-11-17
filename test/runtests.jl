@@ -140,7 +140,7 @@ end
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
           """)
-    for name in ("trillium", "trillium-gpu", "symmetry", "nibi")
+    for name in ("trillium", "trillium-gpu", "symmetry", "nibi", "fir")
         cp(joinpath(pkgdir(SimLaunch), "sites", "$name.toml"), joinpath(sites, "$name.toml"))
     end
     # a Slurm site on this machine, with the stand-ins of test/fakeslurm for sbatch and squeue
@@ -157,12 +157,16 @@ end
           cores = 2
           mem = "8G"
           max = 2
+          arch = "gpu"
           queues = [{ partition = "gpuq", max_time = "1:00:00", max_gpus = 1 }]
           [julia]
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
-          precompile_on = "compute"
+          arch = "cpu"
+          [arch]                           # two kinds of node, and a login node that is neither
+          cpu = "native"
+          gpu = "native"
           """)
     # an environment kind that needs no network: the project and a standard library
     SimLaunch.ENV_KINDS["dates"] = (packages = ["Dates"], warm = "using Dates; println(\"warm: \", Dates.today())")
@@ -291,6 +295,34 @@ end
             label = "n3"
             cmd = "examples/hello.jl n=3"
             """
+        @testset "architectures" begin
+            sym, fir, tri = load_site("symmetry"), load_site("fir"), load_site("trillium")
+            # nodes of one architecture share a depot; the login node compiles for the nodes that have its own
+            @test SimLaunch.site_arch(sym, false) == "amd" && SimLaunch.site_arch(sym, true) == "h200" && sym.login_arch == "login"
+            @test SimLaunch.cpu_target(sym, false) == "znver2;znver4,clone_all" && SimLaunch.cpu_target(sym, true) == ""
+            @test SimLaunch.precompile_where(sym, false) == SimLaunch.precompile_where(sym, true) == "compute"
+            @test SimLaunch.study_depot(sym, "s", "h200") == "/home/eschnetter/claude/studies/s/depot-h200"
+            @test SimLaunch.precompile_where(fir, false) == "login" && SimLaunch.precompile_where(fir, true) == "compute"
+            @test tri.archs == Dict("default" => "") && SimLaunch.precompile_where(tri, false) == "login"
+            profile(text) = (write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n" *
+                                                                "[connect]\nhost = \"odd\"\n[slurm]\nnode = { cores = 4 }\n" * text);
+                             load_site("odd"))
+            @test profile("").arch == "default"
+            @test_throws "`precompile_on` is gone" profile("[julia]\nprecompile_on = \"compute\"\n")
+            @test_throws "`cpu_target` is gone" profile("[julia]\ncpu_target = \"generic\"\n")
+            @test_throws "has no [arch] table" profile("[julia]\narch = \"zen\"\n")
+            @test_throws "must name one of the architectures" profile("[arch]\nzen = \"znver2\"\n")
+            @test_throws "in [arch]; it has zen" profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen3\"\n")
+            @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
+            odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
+            @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"
+            rm(joinpath(sites, "odd.toml"))
+            # a site without a queue compiles where it runs
+            write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n[arch]\nm = \"native\"\n[julia]\narch = \"m\"\n")
+            @test_throws "compiles where it runs" load_site("odd")
+            rm(joinpath(sites, "odd.toml"))
+        end
+
         @testset "the other sites" begin
             job(site; text = gpu_spec, kw...) =
                 resolve(load_spec(spec(text)), load_site(site); study = "toy", project = "Toy", kw...)
@@ -477,10 +509,14 @@ end
             @test occursin(r"precompile job \d+ on cluster: finished, \d+:\d\d after it was submitted\n", text)
             @test endswith(text, "study toy is prepared on cluster\n")
             @test !ispath(lock_dir(cluster))                                     # given back by the job
-            @test readlines(joinpath(ccode, "depot", "prepared")) == ["envs/default-dates\t\tgpu"]
+            @test readlines(joinpath(ccode, "depot-gpu", "prepared")) == ["envs/default-dates\t\tgpu"]
             # the caches are the study's own; the packages are the site's
-            @test "Toy" in readdir(joinpath(ccode, "depot", "compiled", "v$(VERSION.major).$(VERSION.minor)"))
-            @test islink(joinpath(ccode, "depot", "packages"))
+            @test "Toy" in readdir(joinpath(ccode, "depot-gpu", "compiled", "v$(VERSION.major).$(VERSION.minor)"))
+            @test islink(joinpath(ccode, "depot-gpu", "packages"))
+            # one depot per architecture: the login node's holds nothing of the project, the CPU nodes' is not made yet
+            @test !ispath(joinpath(ccode, "depot-login", "compiled", "v$(VERSION.major).$(VERSION.minor)", "Toy"))
+            @test !ispath(joinpath(ccode, "depot-cpu")) && !ispath(joinpath(ccode, "depot"))
+            @test occursin("DEPOT=$(joinpath(ccode, "depot-gpu")) ", generate(only(SimLaunch.load_jobs("toy", cluster, [f]))))
             env = TOML.parsefile(joinpath(ccode, "envs", "default-dates", "Project.toml"))
             @test issubset(["Toy", "ToyDep", "Dates"], keys(env["deps"]))
             @test env["sources"]["ToyDep"]["path"] == joinpath(ccode, "src", "ToyDep")
@@ -593,8 +629,9 @@ end
             @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
             # the marker of what is prepared names the CPU target of a site with several CPU types
             @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"] .*
-                                            "\t\t\tgeneric;znver2,clone_all;znver4,clone_all"
-            @test occursin("export JULIA_CPU_TARGET='generic;znver2,clone_all;znver4,clone_all'", generate(j))
+                                            "\t\t\tznver2;znver4,clone_all"
+            @test occursin("export JULIA_CPU_TARGET='znver2;znver4,clone_all'", generate(j))
+            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy2/depot-amd ", generate(j))
             prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
             @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)
             @test occursin("set_mpi.jl system", prep) && occursin("module load nvhpc-hpcx-cuda12/24.9", prep)

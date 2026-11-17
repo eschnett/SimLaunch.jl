@@ -23,7 +23,7 @@ queues = [                             # in the order of preference
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []                           # a pure Julia job needs none
-precompile_on = "login"                # login node is Zen 5 like the compute nodes
+# No [arch] table: one architecture. The login node is Zen 5 like the compute nodes, and compiles for them.
 precompile_tasks = 8                   # login nodes are shared
 compute_internet = false               # prepare fetches everything; jobs run offline
 

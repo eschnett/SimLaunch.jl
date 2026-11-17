@@ -8,7 +8,6 @@ scratch = "~/.local/share/simlaunch/runs"
 
 [julia]
 bin = "julia"
-precompile_on = "login"
 
 [mpi.jll]                              # MPICH_jll under its own mpiexec
 launcher = "mpiexec"
