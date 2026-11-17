@@ -30,6 +30,9 @@ const USAGE = """
           List what would be deleted on the site, and delete it after confirmation.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
           Run the spec's [combine] script over each run's job directories.
+      simlaunch after <study> <spec.toml> --site <site> [--run <label>]... [--checkout]
+          Run the spec's [after] command again over the runs' newest job directories.
+          --checkout takes PROJECT from the project as it is here now, not from the snapshot.
       simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...
           Test the spec's driver against the restart contract, with real jobs.
       simlaunch sites
@@ -37,6 +40,7 @@ const USAGE = """
       simlaunch studies
           List the studies in the cache.
 
+    A spec is a TOML file, or a Julia file (.jl) whose last expression is the spec.
     Snapshots are kept in ~/.cache/simlaunch (or \$SIMLAUNCH_CACHE).
     """
 
@@ -156,6 +160,11 @@ function command(args)
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
         length(pos) == 2 || fail("usage: simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...")
         combine(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]))
+    elseif cmd == "after"
+        pos, opt = parse_args(rest, ["site", "run"], ["checkout"]; multi = ["run"])
+        length(pos) == 2 || fail("usage: simlaunch after <study> <spec.toml> --site <site> [--run <label>]... [--checkout]")
+        after(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]),
+              checkout = get(opt, "checkout", false))
     elseif cmd == "check-restart"
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
         length(pos) == 2 || fail("usage: simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...")

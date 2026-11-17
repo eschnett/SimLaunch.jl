@@ -194,6 +194,31 @@ restart_source() {
     echo "$found"
 }
 
+# cpu_model: the CPU of this node, as lscpu or macOS names it.
+cpu_model() {
+    local m
+    m=$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+    if [ -z "$m" ]; then m=$(sysctl -n machdep.cpu.brand_string 2>/dev/null); fi
+    echo "${m:-unknown}" | tr -d '"\\'
+}
+
+# job_record RUN-INDEX: where and when this job runs the run; kept in the
+# job's directory as simlaunch-job.toml, with the results.
+job_record() {
+    local g
+    echo "run = \"$SPEC-${LABELS[$1]}\""
+    echo "job_id = \"$JOBID\""
+    echo "started = $(sw_now)"
+    echo "host = \"$(hostname -s)\""
+    echo "cpu = \"$(cpu_model)\"        # of this host; a job's other nodes can differ"
+    if [ -n "${SLURM_JOB_NODELIST:-}" ]; then echo "nodes = \"$SLURM_JOB_NODELIST\""; fi
+    if [ -n "${SLURM_JOB_PARTITION:-}" ]; then echo "partition = \"$SLURM_JOB_PARTITION\""; fi
+    if [ "$GPUS" -gt 0 ]; then
+        g=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sort -u | paste -sd, - | tr -d '"\\')
+        if [ -n "$g" ]; then echo "gpu = \"$g\""; fi
+    fi
+}
+
 # run_one RUN-INDEX: run it in its job directory, keep its SimWatch file
 # current, and make the directory read-only when it has ended. Call in a
 # subshell; exits with the run's exit code.
@@ -203,6 +228,7 @@ run_one() {
     cd "$jobdir" || exit 1
     grep -qxF "$JOBID" "$dir/.simlaunch-jobs" 2>/dev/null || echo "$JOBID" >> "$dir/.simlaunch-jobs"
     echo "$JOBID running" > "$dir/.simlaunch-job"
+    job_record "$i" > "$jobdir/simlaunch-job.toml"
     RESTART_ARGS=()
     if [ "$CHECKPOINTS" = 1 ]; then
         mkdir -p "$jobdir/ck"

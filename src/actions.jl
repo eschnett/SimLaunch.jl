@@ -192,12 +192,12 @@ job_state(site::Site, jobid) =
     strip(readsite(site, "squeue -h -j $(q(jobid)) -o %T 2>/dev/null | head -n 1 || true"))
 
 "Wait until the queue no longer knows the job, printing each new state."
-function wait_job(site::Site, jobid; what = "job", poll = 20)
+function wait_job(site::Site, jobid; what = "job", poll = 20, io::IO = stdout)
     last = ""
     while true
         state = job_state(site, jobid)
         isempty(state) && return
-        state == last || println("$what $jobid on $(site.name): ", lowercase(state))
+        state == last || println(io, "$what $jobid on $(site.name): ", lowercase(state))
         last = state
         sleep(poll)
     end
@@ -208,7 +208,7 @@ Take the site's precompile lock: a directory, since `mkdir` is atomic, that
 holds the ID of the precompile job. Waits for a job that holds it; a lock
 whose job the queue no longer knows is stale and is taken over.
 """
-function acquire_lock(site::Site; poll = 20)
+function acquire_lock(site::Site; poll = 20, io::IO = stdout)
     lock = q(lock_dir(site))
     while true
         out = strip(readsite(site, "mkdir -p $(q(site.code)) && if mkdir $lock 2>/dev/null; then echo acquired; " *
@@ -221,12 +221,12 @@ function acquire_lock(site::Site; poll = 20)
                  "If none is running, remove $(lock_dir(site)) there.")
         if out != "stale"
             if !isempty(job_state(site, out))
-                println("precompile job $out holds the lock on $(site.name); waiting for it")
-                wait_job(site, out; what = "precompile job", poll)
+                println(io, "precompile job $out holds the lock on $(site.name); waiting for it")
+                wait_job(site, out; what = "precompile job", poll, io)
                 sleep(2)                           # its exit trap removes the lock
                 continue
             end
-            println("the precompile lock on $(site.name) names job $out, which has ended: taking it over")
+            println(io, "the precompile lock on $(site.name) names job $out, which has ended: taking it over")
         end
         runsite(site, "rm -rf $lock")
     end
@@ -235,13 +235,13 @@ end
 release_lock(site::Site) = runsite(site, "rm -rf " * q(lock_dir(site)))
 
 "Precompile `needed` in jobs on the compute nodes, one job per kind of node."
-function precompile_on_compute(site::Site, study, needed; poll = 20)
+function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = stdout)
     code = study_code(site, study)
     for gpu in (false, true)
         precompile_where(site, gpu) == "compute" || continue
         missing_combos() = (have = prepared(site, study); [c for c in needed if c.gpu == gpu && combo_line(c) ∉ have])
         isempty(missing_combos()) && continue
-        acquire_lock(site; poll)
+        acquire_lock(site; poll, io)
         group = missing_combos()                   # the job that held the lock may have made them
         if isempty(group)
             release_lock(site)
@@ -264,9 +264,11 @@ function precompile_on_compute(site::Site, study, needed; poll = 20)
             rethrow()
         end
         log = precompile_log(site, study, jobid)
-        println("precompile job $jobid on a $(gpu ? "GPU" : "CPU") node of $(site.name); log in $log")
-        println("(this can be interrupted; `simlaunch prepare` run again finds the job and continues)")
-        wait_job(site, jobid; what = "precompile job", poll)
+        println(io, "precompile job $jobid on a $(gpu ? "GPU" : "CPU") node of $(site.name); log in $log")
+        println(io, "(this can be interrupted; `simlaunch prepare` run again finds the job and continues)")
+        t0 = time()
+        wait_job(site, jobid; what = "precompile job", poll, io)
+        seconds = round(Int, time() - t0)
         left = missing_combos()
         # the login node can see a file that a compute node wrote a minute late (NFS on Symmetry)
         for attempt in 1:12
@@ -278,6 +280,8 @@ function precompile_on_compute(site::Site, study, needed; poll = 20)
             print(readsite(site, "tail -n 30 " * q(log) * " 2>/dev/null || true"))
             fail("precompile job $jobid on $(site.name) did not finish $(join(combo_text.(left), ", ")); its log is $log")
         end
+        # the last state printed above is "running": say that it ended, and how
+        println(io, "precompile job $jobid on $(site.name): finished, $(seconds ÷ 60):$(lpad(seconds % 60, 2, '0')) after it was submitted")
     end
     return
 end
@@ -371,8 +375,9 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     println(io, "preparing on $(s.name); log in $(joinpath(study_scratch(s, study), "prepare.log"))")
     ok = success(pipeline(sitecmd(s, "bash " * q(joinpath(code, "jobs", name))); stdout = io, stderr))
     ok || fail("prepare failed on $(s.name); see the output above")
-    s.slurm && precompile_on_compute(s, study, needed; poll)
+    s.slurm && precompile_on_compute(s, study, needed; poll, io)
     report_versions(io, s, study, needed)
+    println(io, "study $study is prepared on $(s.name)")
     return needed
 end
 
@@ -502,7 +507,10 @@ function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, 
     mktempdir() do dir
         write(joinpath(dir, base * ".sh"), generate(job; script = remote, successor))
         push_file(s, joinpath(dir, base * ".sh"), remote)
-        push_file(s, spec, joinpath(code, "jobs", base * ".toml"))
+        # the spec as it was read: for a Julia spec what it evaluated to, and the file beside it
+        write(joinpath(dir, base * ".toml"), spec_toml(spec))
+        push_file(s, joinpath(dir, base * ".toml"), joinpath(code, "jobs", base * ".toml"))
+        endswith(spec, ".jl") && push_file(s, spec, joinpath(code, "jobs", base * ".jl"))
     end
     runsite(s, "mkdir -p " * q(joinpath(scratch, "logs")))
     ids = String[]

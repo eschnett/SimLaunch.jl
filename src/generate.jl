@@ -82,9 +82,13 @@ function run_command(job::Job, r::Run)
     site = job.site
     julia = julia_text(site, r.mpi)
     envdir = "\"\$CODE\"/" * q(r.envdir)
+    # A step under srun has its own shape. Without the job's SLURM_CPUS_PER_TASK, srun does not warn that a
+    # step with fewer and wider tasks "may never run" (Slurm 21.08 on Symmetry, job 601766: it runs the same).
+    srun = r.ranks > 0 ? site.mpi[r.mpi].launcher == "srun" : job.pin
     words = String[]
-    if !isempty(r.vars)
+    if srun || !isempty(r.vars)
         push!(words, "env")
+        srun && push!(words, "-u", "SLURM_CPUS_PER_TASK")
         append!(words, ["$k=$(q(v))" for (k, v) in sort!(collect(r.vars))])
     end
     if r.ranks > 0
@@ -92,7 +96,8 @@ function run_command(job::Job, r::Run)
         if rec.launcher == "srun"
             push!(words, "srun")
             append!(words, q.(rec.launcher_args))
-            push!(words, "--nodes=$(r.nodes)", "--ntasks=$(r.ranks)",
+            # else the other ranks of one that died wait in MPI until the time limit
+            push!(words, "--kill-on-bad-exit=1", "--nodes=$(r.nodes)", "--ntasks=$(r.ranks)",
                   "--cpus-per-task=$(job.cores * r.nodes ÷ r.ranks)", "--cpu-bind=none")
         else
             # the binary's own mpiexec, found through MPI.jl
@@ -106,14 +111,17 @@ function run_command(job::Job, r::Run)
         push!(words, "--cpu-bind=none")
     end
     if r.placement == "numa"
-        # rank i of the R on its node gets NUMA domain i·D/R: its cores and its memory
+        # rank i of the R on its node gets NUMA domain i·D/R: its cores and its memory. D is counted on the
+        # node (`numactl -H` starts with "available: 8 nodes (0-7)"): a partition can mix node types, and the
+        # profile's number is only what `submit` checks against
         rpn = max(r.ranks, 1) ÷ r.nodes
         # which rank on its node this is: srun says so; under an mpiexec the batch step's SLURM_LOCALID (0) is
         # inherited and says nothing, and Open MPI or Hydra do
-        srun = r.ranks > 0 && site.mpi[r.mpi].launcher == "srun"
-        id = srun ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
-        bind = "l=$id; d=\$(( l * $(site.numa) / $rpn )); " *
-               "exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
+        id = srun && r.ranks > 0 ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
+        bind = "l=$id; n=; read -r _ n _ < <(numactl -H 2>/dev/null); " *
+               "if [ \"\${n:-0}\" -lt $rpn ]; then echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, " *
+               "too few for $rpn rank$(rpn == 1 ? "" : "s") with one domain each\" >&2; exit 1; fi; " *
+               "d=\$(( l * n / $rpn )); exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
         push!(words, "bash", "-c", q(bind), "numa")
     end
     append!(words, r.prefix)                           # as written

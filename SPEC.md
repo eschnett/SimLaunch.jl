@@ -1,7 +1,7 @@
 # SimLaunch: job specs
 
-A job spec is a TOML file that says what to run and what it needs. This is
-the reference for every key. [`README.md`](README.md) has an introduction,
+A job spec is a TOML file that says what to run and what it needs, or a
+Julia file that evaluates to the same. This is the reference for every key. [`README.md`](README.md) has an introduction,
 [`CONVERTING.md`](CONVERTING.md) the way from a hand-written batch script
 to a spec, and [`PLAN.md`](PLAN.md) the reasons.
 
@@ -13,6 +13,7 @@ to a spec, and [`PLAN.md`](PLAN.md) the reasons.
 - [MPI and placement](#mpi-and-placement)
 - [Restarts](#restarts)
 - [After the runs](#after-the-runs)
+- [A spec in Julia](#a-spec-in-julia)
 - [What a job is refused for](#what-a-job-is-refused-for)
 
 ## Structure
@@ -37,7 +38,11 @@ no site tables, and is refused elsewhere. A site without a table gets the
 defaults, and must then find `time` at the top level if it is a cluster.
 
 One spec makes one job: one batch allocation that holds all its runs. A
-run's output directory is `<scratch>/<study>/<name>-<label>/`.
+run's output directory is `<scratch>/<study>/<name>-<label>/`. Each job of
+the run has a directory of its own in it, `001-<job ID>/`, with the run's
+`output.log`, the files it writes, and `simlaunch-job.toml`: the job, when
+it started, its host and the host's CPU model, the job's node list and
+partition, and its GPUs.
 
 An unknown key is an error, never ignored.
 
@@ -71,8 +76,8 @@ In `[site.<name>]`, or at the top level as a default.
 | `julia_args` | `[]` | Julia options, such as `["--check-bounds=yes"]`. Each set is precompiled by `prepare` |
 | `vars` | `{}` | Environment variables for the runs |
 | `queue` | chosen by rule | A partition of the site. Without it, the first in the profile's order that fits |
-| `node` | none | A named node, or a node list as Slurm writes it |
-| `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]` |
+| `node` | none | The node or nodes the job runs on, as Slurm writes a node list: `"cn099"`, `"cn[095-096]"` |
+| `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn112"]` |
 | `mpi` | none | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
 | `placement` | none | `"numa"` |
 | `prefix` | none | Words before the Julia command, as written: `"perf stat -e cache-misses"` |
@@ -81,6 +86,10 @@ The default of `threads` is the allocation's cores for sequential runs, the
 cores divided by the number of runs for parallel ones, the cores divided by
 the ranks on a node for a run with ranks, and one NUMA domain's cores with
 `placement = "numa"`.
+
+A partition can mix node types. A benchmark names its node with `node`, or
+keeps off the nodes that differ with `sbatch_args = ["--exclude=cn112"]` or
+a `--constraint`. Which CPU a run got is in its `simlaunch-job.toml`.
 
 ## Runs
 
@@ -140,7 +149,13 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
 - `ranks` starts the run through the recipe's launcher. A run with `mpi` but
   without `ranks` runs in the recipe's environment without a launcher.
 - `placement = "numa"` binds each rank to one NUMA domain, its cores and
-  its memory, with `numactl`. A run without ranks gets domain 0.
+  its memory, with `numactl`: rank i of the R on a node gets domain i·D/R.
+  A run without ranks gets domain 0. D is counted on the node when the run
+  starts. A node with fewer domains than ranks ends the run at once; the
+  profile's count is what `submit` checks and what the default of `threads`
+  comes from.
+- Ranks started with `srun` end together: when one exits with an error, the
+  others are stopped (`--kill-on-bad-exit=1`).
 - A job on several nodes has `resources = { nodes = N }`; a run's `nodes`
   says how many of them its ranks use.
 - Runs with ranks need `mode = "sequential"`.
@@ -197,9 +212,50 @@ cmd = "test/combine_chain.jl"
   the study's output directory. `PROJECT`, `SCRATCH`, `STUDY`, `SPEC`,
   `JOBID` and `SIMLAUNCH_JOBDIRS` (this job's directories) are set. Its
   output goes to the job's log.
+- `simlaunch after <study> <spec> --site <site>` runs the `[after]` command
+  again, on the login node, when no job of the spec is queued or running.
+  `SIMLAUNCH_JOBDIRS` is then each run's newest job directory, and `JOBID`
+  the job they came from (several, separated by commas, if they differ).
+  The output is printed and kept in the study's `logs/`. With `--checkout`,
+  `PROJECT` is a copy of the project as it is on the laptop now, for a
+  script that was wrong when the snapshot was taken; the log says which it
+  was. The study's snapshot is not changed.
 - `[combine] cmd` is a script of the project, run by `simlaunch combine`. It
   gets a run's job directories, oldest first, as its last arguments, and
   writes into its working directory, a new `combined-<n>/` of the run.
+
+## A spec in Julia
+
+A spec file that ends in `.jl` is evaluated, and the value of its last
+expression is the spec: named tuples or dictionaries where TOML has tables,
+tuples or arrays where it has lists. It is for a spec whose runs are a
+product, where the TOML would be the same table many times:
+
+```julia
+runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi = m)
+        for v in ("v7", "v13"), g in (1, 2, 4), m in ("jll-fork", "system"), p in ("staged", "direct")
+        if !(m == "jll-fork" && p == "direct")]
+
+(name = "nested-gpu",
+ site = Dict("symmetry" => (time = "1:00:00", resources = (gpus = 4,), env = "cuda")),
+ run = runs)
+```
+
+- The keys and their meaning are those of a TOML spec, and so are the
+  checks. Everything else is Julia's: there is no key for a product, a
+  condition or a variable.
+- A site's name that is not a Julia name, such as `local` or `trillium-gpu`,
+  needs a dictionary as above.
+- A matrix of runs, as a comprehension over two ranges without a condition
+  gives, is read in its order of storage: the first range varies fastest.
+- The file is one file, evaluated in a module of its own with Julia's
+  standard library. It cannot load the study's packages or `include`
+  another file.
+- It must give the same spec every time: `wait`, `after` and `resubmit`
+  evaluate it again. No random numbers, dates or files that change.
+- `submit` keeps what the file evaluated to beside the batch script on the
+  site, as `jobs/<name>-<time>.toml`, and the file itself as `.jl`.
+  `submit --dry-run` shows the runs without submitting.
 
 ## What a job is refused for
 

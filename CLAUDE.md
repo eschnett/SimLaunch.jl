@@ -62,6 +62,8 @@ profile directory; the tests use both.
 - Manifests are never copied to a site, and nothing that depends on cores,
   threads, memory or time is shared between sites (PLAN.md, "Source
   snapshots" and "Job specs and generated scripts").
+- A spec can be a Julia file. Only `load_spec` and `spec_toml`
+  (`src/spec.jl`) know that; everything after them sees what TOML gives.
 - A spec field that is not implemented is refused by name (`LATER_KEYS` in
   `src/spec.jl`), never ignored.
 - `clean` and `--old-checkpoints` delete on a site: ask Erik first, as for

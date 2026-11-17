@@ -1,7 +1,7 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
                  prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions,
-                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec
+                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec, after
 using Test
 using TOML
 
@@ -235,6 +235,33 @@ end
             @test_throws "for site symmetry only" job(one, trillium)
             @test job(replace(one, "symmetry" => "trillium"), trillium).time == 3600
             @test_throws "no `time`" job(replace(spec_text(RUNS), "time = \"3:00:00\"" => ""), trillium)
+            # a spec written in Julia: the value of the file, read as its TOML is
+            jl(text) = (f = tempname(root) * ".jl"; write(f, text); f)
+            f = jl("""
+                   using Printf
+                   runs = [(label = @sprintf("n%d%s", n, v), cmd = "examples/hello.jl n=\$n", vars = (TOYVAR = v,))
+                           for n in (3, 5), v in ("a", "b")]
+                   (name = "hello", site = Dict("trillium" => (time = "3:00:00", mode = "parallel", threads = Int32(32))),
+                    run = runs)
+                   """)
+            same = """
+                name = "hello"
+                [site.trillium]
+                time = "3:00:00"
+                mode = "parallel"
+                threads = 32
+                """ * join(["[[run]]\nlabel = \"n$n$v\"\ncmd = \"examples/hello.jl n=$n\"\nvars = { TOYVAR = \"$v\" }\n"
+                            for v in ("a", "b") for n in (3, 5)])
+            @test load_spec(f) == TOML.parse(same)
+            @test TOML.parse(SimLaunch.spec_toml(f)) == load_spec(f)
+            j = resolve(load_spec(f), trillium; study = "toy", project = "Toy", file = f)
+            @test [r.label for r in j.runs] == ["n3a", "n5a", "n3b", "n5b"] && j.runs[3].vars == Dict("TOYVAR" => "b")
+            @test_throws "is a Symbol" load_spec(jl("(name = \"x\", run = [(label = :a,)])"))
+            @test_throws "the spec.run[1].label" load_spec(jl("(name = \"x\", run = [(label = :a,)])"))
+            @test_throws "named tuple or a dictionary" load_spec(jl("42"))
+            @test_throws "boom" load_spec(jl("error(\"boom\")"))
+            @test_throws UserError load_spec(jl("(name = "))
+            @test_throws "unknown key" resolve(load_spec(jl("(name = \"x\", tiem = \"1:00\")")), trillium; study = "toy", project = "Toy")
         end
 
         @testset "the generated script for Trillium" begin
@@ -382,6 +409,47 @@ end
             @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--poll", "0.3"]) == 1
         end
 
+        @testset "a spec in Julia, a job's record, and the [after] command again" begin
+            code = study_code(load_site("local"), "toy")
+            f = joinpath(root, "tab.jl")
+            write(f, """
+                  show = "echo jobs \\\$JOBID; cat \\"\\\$PROJECT\\"/examples/note.txt 2>/dev/null || echo no note; " *
+                         "for d in \\\$SIMLAUNCH_JOBDIRS; do cat \\\$d/result.csv; done"
+                  (name = "tab", site = Dict("local" => (threads = 1,)), after = (cmd = show,),
+                   run = [(label = "n\$n", cmd = "examples/hello.jl n=\$n") for n in (2, 4)])
+                  """)
+            jobid = submit("toy", f; site = "local", io = devnull)
+            @test wait_spec("toy", f; site = "local", poll = 0.3, io = devnull)
+            # what the spec evaluated to is kept beside the script, with the file itself
+            kept = only(filter(n -> startswith(n, "tab-") && endswith(n, ".toml"), readdir(joinpath(code, "jobs"))))
+            @test TOML.parsefile(joinpath(code, "jobs", kept)) == load_spec(f)
+            @test isfile(joinpath(code, "jobs", replace(kept, ".toml" => ".jl")))
+            # every job directory says where it ran
+            record = TOML.parsefile(joinpath(scratch, "tab-n2", "001-$jobid", "simlaunch-job.toml"))
+            @test record["job_id"] == jobid && record["run"] == "tab-n2" && !isempty(record["cpu"]) && !isempty(record["host"])
+            log = read(joinpath(scratch, "logs", "tab-$jobid.out"), String)
+            @test occursin("jobs $jobid\nno note\nn,answer\n2,5\nn,answer\n4,9\n", log)
+            # the command again, from the snapshot and from the checkout as it is now
+            out = IOBuffer()
+            again = after("toy", f; site = "local", io = out)
+            text = String(take!(out))
+            @test occursin("PROJECT is the study's snapshot", text) && occursin("jobs $jobid\nno note\nn,answer\n2,5\nn,answer\n4,9\n", text)
+            @test read(again, String) * "log: $again\n" == text
+            note = joinpath(toy, "examples", "note.txt")
+            write(note, "a note\n")
+            sleep(1.1)                                                           # a log's name holds the second
+            after("toy", f; site = "local", only_runs = ["n4"], checkout = true, io = out)
+            rm(note)
+            text = String(take!(out))
+            @test occursin("PROJECT is the checkout $(realpath(toy))", text) && occursin("uncommitted changes", text)
+            @test occursin("jobs $jobid\na note\nn,answer\n4,9\n", text) && !occursin("2,5", text)
+            copy = only(readdir(joinpath(scratch, "after"); join = true))
+            @test !iswritable(joinpath(copy, "Toy", "examples", "note.txt")) && !ispath(joinpath(copy, "Toy", ".git"))
+            @test !ispath(joinpath(code, "src", "Toy", "examples", "note.txt"))  # the snapshot is as it was
+            @test_throws "no [after] table" after("toy", spec(spec_text(RUNS)); site = "local", io = devnull)
+            @test SimLaunch.command(["after", "toy", f, "--site", "local"]) == 0
+        end
+
         @testset "a site that precompiles in a job, and an environment" begin
             cluster = load_site("cluster")
             cscratch, ccode = study_scratch(cluster, "toy"), study_code(cluster, "toy")
@@ -405,6 +473,9 @@ end
                 prepare("toy"; site = "cluster", specs = [f], poll = 0.5, io = out)
             end
             @test combo_line.(needed) == ["envs/default-dates\t\tgpu"]
+            text = String(take!(out))                                            # it says how the job ended, and that it is done
+            @test occursin(r"precompile job \d+ on cluster: finished, \d+:\d\d after it was submitted\n", text)
+            @test endswith(text, "study toy is prepared on cluster\n")
             @test !ispath(lock_dir(cluster))                                     # given back by the job
             @test readlines(joinpath(ccode, "depot", "prepared")) == ["envs/default-dates\t\tgpu"]
             # the caches are the study's own; the packages are the site's
@@ -527,6 +598,26 @@ end
             prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
             @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)
             @test occursin("set_mpi.jl system", prep) && occursin("module load nvhpc-hpcx-cuda12/24.9", prep)
+            # ranks under srun end together; a rank's NUMA domain is counted on its node, not taken from the profile
+            cmd = SimLaunch.run_command(j, j.runs[1])
+            @test occursin("srun --mpi=pmi2 --kill-on-bad-exit=1 --nodes=1 --ntasks=8 ", cmd)
+            bind = match(r"bash -c ('[^']*') numa ", cmd)[1]
+            fake = mkpath(joinpath(root, "fakenuma"))
+            numactl(n) = (write(joinpath(fake, "numactl"), "#!/bin/bash\nif [ \"\$1\" = -H ]; then echo \"available: $n nodes (0-$(n - 1))\"; " *
+                                                           "echo \"node 0 cpus: 0 1\"; else echo \"\$@\"; fi\n");
+                          chmod(joinpath(fake, "numactl"), 0o755))
+            placed(l) = withenv("PATH" => fake * ":" * ENV["PATH"], "SLURM_LOCALID" => l) do
+                err = IOBuffer()
+                p = run(pipeline(ignorestatus(`bash -c "bash -c $bind numa the run"`); stdout = err, stderr = err))
+                (p.exitcode, String(take!(err)))
+            end
+            numactl(16)
+            @test placed("3") == (0, "--cpunodebind=6 --membind=6 the run\n")
+            numactl(8)
+            @test placed("3") == (0, "--cpunodebind=3 --membind=3 the run\n")
+            numactl(4)
+            code, said = placed("3")
+            @test code == 1 && occursin("has 4 NUMA domains, too few for 8 ranks", said)
             @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "symmetry")
             @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "symmetry")
             @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "symmetry")

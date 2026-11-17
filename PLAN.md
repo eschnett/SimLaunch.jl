@@ -456,6 +456,18 @@ cmd = "examples/harmonic_single.jl p=8 M=4 M_h=4 M_f=4 M_i=4 M_s=8"
 # … four more
 ```
 
+**A spec in Julia.** A spec file that ends in `.jl` is evaluated, and the
+value of its last expression is the spec, as named tuples or dictionaries.
+`load_spec` turns it into what a TOML file gives, and nothing after it
+knows the difference. The need is TreeAMR's: its `nested-gpu` spec was 241
+lines of `[[run]]` tables that differ in version, GPUs, MPI, path and
+round. A key for a product of runs was considered and rejected: it needs
+substitution and quoting, then exclusions, then conditions and variables,
+which is a language. Julia is one already, and data, not text put into a
+TOML string, needs no quoting. The file is evaluated in a module of its
+own with the standard library only, must give the same spec each time, and
+`submit` keeps what it evaluated to, as TOML, beside the batch script.
+
 **Per site.** `time`, `resources`, `mode`, `threads`, `pin`, `env`, memory
 and the placement fields are read from `[site.<name>]`. A value at the top
 level is a default for every site, meant for what does not depend on
@@ -483,7 +495,12 @@ is not implemented. An `[after]` table names one shell command run inside
 the job after the last run, for a table such as TreeAMR's `mpitable.awk`. It
 runs in the study's output directory, with `PROJECT` and
 `SIMLAUNCH_JOBDIRS` (this job's directories) exported, and its output goes
-to the job's log.
+to the job's log. `simlaunch after <study> <spec>` runs the command again
+on the login node over each run's newest job directory, for a table that
+was wrong or is wanted again. Its `--checkout` takes `PROJECT` from a
+read-only copy of the project as it is on the laptop now, kept in the
+study's output directory, and the log says so: the study's snapshot, which
+is what the jobs ran, is not touched.
 
 **Environments.** `env` names kinds joined by `+`: `cuda` and `metal` add
 the device package, `test` the project's test dependencies, `mpi` MPI.jl set
@@ -493,12 +510,21 @@ environment of its own per recipe, `envs/<variant>-<kinds>-<recipe>/`.
 **Placement.** `pin = true` is `JULIA_EXCLUSIVE=1` with
 `srun --cpu-bind=none` and `-t N,0`. `placement = "numa"` binds rank i of
 the R on its node to NUMA domain i·D/R with `numactl --cpunodebind
---membind`, D from the profile (8 on Symmetry's EPYC 7543 nodes and on
-Trillium, 6 on Nibi); a run without ranks gets domain 0. The two exclude
+--membind`; a run without ranks gets domain 0. D is counted on the node
+when the run starts (`numactl -H`), and a node with fewer domains than
+ranks ends the run at once. The profile's count (8 on Symmetry's EPYC 7543
+nodes and on Trillium, 6 on Nibi) is what `submit` checks and what the
+default of `threads` comes from. The reason is Symmetry's cn112 (EPYC
+8534P), which has fewer than the profile's 8: TreeAMR's nested benchmark
+landed there on 2026-11-17, rank 1 asked `numactl` for domain 4 and
+exited, and the other ranks waited in MPI for 35 minutes. Ranks under
+`srun` are therefore also started with `--kill-on-bad-exit=1`. The two exclude
 each other: `JULIA_EXCLUSIVE` binds threads to the cores from 0 on, whatever
 `numactl` allows, so a run with `ranks` or `placement` is not pinned.
-`node = "cn095"` fixes the node for a benchmark, and every job records
-`lscpu`'s model.
+`node = "cn095"` fixes the node for a benchmark, `sbatch_args =
+["--exclude=cn112"]` keeps a job off one, and every job directory records
+its host and `lscpu`'s model in `simlaunch-job.toml`, which `fetch` copies
+with the results.
 
 **MPI.** `mpi` names a recipe in the site profile, and `ranks` the number of
 ranks; `threads` is then per rank. Runs of one job may use different recipes
@@ -1089,9 +1115,13 @@ and for clusters that are down.
      were bound to domain 0. The placement now reads the rank from Open MPI
      or Hydra there, and from `srun` only under `srun`.
 
-   Known and left: `srun` warns that a step's `--cpus-per-task` exceeds the
-   job's when a run has fewer ranks than the job's largest (the step runs);
-   under HPC-X's `mpiexec` Julia writes terminal title sequences into the
+   `srun` warned that a step's `--cpus-per-task` exceeds the job's ("may
+   never run") when a run has fewer ranks than the job's largest; the step
+   ran. A step is now started without the job's `SLURM_CPUS_PER_TASK`
+   (`env -u`), which removes the warning and changes nothing else: probe
+   job 601766 on cn083, which also saw `--kill-on-bad-exit=1` end three
+   sleeping ranks at once and the placement give each of 8 ranks its own
+   domain. Known and left: under HPC-X's `mpiexec` Julia writes terminal title sequences into the
    output.
 
    Open of the done-when list: `check-restart` for the converted drivers,
@@ -1102,6 +1132,30 @@ and for clusters that are down.
 4. **Migration.** The tables above, one script at a time, each when a run of
    it is due. Done when `symmetry-run.sh` and XCTS's three scripts are retired
    and the skills point at the profiles.
+
+   TreeAMR's nine scripts were converted first and ran on Symmetry. What
+   that found, on 2026-11-17:
+
+   - Done: a spec in Julia in place of a key for a product of runs; the
+     NUMA domains counted on the node; `--kill-on-bad-exit=1`; the host and
+     CPU model in every job directory; `simlaunch after`; `node` and
+     `sbatch_args` described as the way to choose or avoid nodes.
+   - `prepare` waits for its precompile jobs, but its last line was "precompile
+     job … running", which read afterwards as if it had left the job
+     behind. It now prints how each job ended and a closing line.
+   - Open, each to be designed:
+     - a `depot` root in a profile's `[paths]`, since home is small on most
+       sites and compiled caches need not live there;
+     - a new study derived from one on the site, with its manifests and
+       caches copied, so that a one-line fix does not compile everything
+       again. One depot shared by all studies stays ruled out (see "The
+       study's depot"), and so does changing a study's sources in place:
+       its finished runs point at them;
+     - a smoke run of every run of a spec on `local` before `submit`, which
+       needs a convention for a tiny size;
+     - the same recipe names on every site (`jll`, `system`), with the
+       launcher for a GPU job chosen by the tool;
+     - MPI recipes for `trillium-gpu`, which has none.
 
 **Open questions for Erik:**
 

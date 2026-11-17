@@ -31,7 +31,9 @@ an agent, working in the project that owns the script, such as TreeAMR's
    (environments, precompilation), what it asks the queue for, which
    commands it runs, and what it does with their output.
 2. **Write the spec**, `jobs/<name>.toml`: the commands become `[[run]]`
-   tables, the queue's part a `[site.<name>]` table.
+   tables, the queue's part a `[site.<name>]` table. Where the runs are a
+   product of versions, sizes and rounds, write `jobs/<name>.jl` instead:
+   see "A spec in Julia" in `SPEC.md`.
 3. **Take a snapshot** of the project:
    `simlaunch snapshot . --study <study>`, with `--variant <name>=<directory>`
    for each further version the script compares.
@@ -52,6 +54,8 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | `#SBATCH --partition`, `--time`, `--nodes`, `--gres`, `--mem`, `--exclusive`, `--account` | `time` and `resources` in the site table. The partition is chosen by rule, or `queue`. Cores, memory, account and `--exclusive` come from the site's profile |
 | Any other `#SBATCH` line | `sbatch_args` |
 | `--nodelist` | `node` |
+| `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn112"]` |
+| A line that records the node and `lscpu`'s model | nothing: every job directory has a `simlaunch-job.toml` with them |
 | A setup stage: `Pkg.instantiate`, `Pkg.precompile`, building environments | `simlaunch prepare`, once per study and site. Nothing of it stays in the job |
 | An environment that copies `test/Project.toml` with the package's path made absolute | `env = "test"` |
 | `Pkg.add("CUDA")` into a scratch environment | `env = "cuda"`, or `"test+cuda"` |
@@ -61,13 +65,13 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | `JULIA_EXCLUSIVE=1` with `srun --cpu-bind=none` | `pin = true` |
 | `-t N`, `OPENBLAS_NUM_THREADS` | `threads`, `blas_threads` |
 | A loop over thread counts | `threads = [1, 8, 64]` in one run |
-| A loop over anything else (sizes, shapes, versions) | one `[[run]]` per iteration, written out |
+| A loop over anything else (sizes, shapes, versions) | one `[[run]]` per iteration, written out; for more than a few, a spec in Julia that builds the list |
 | `VAR=value julia …`, `export VAR` | `vars`, for the job or for one run |
 | `--check-bounds=yes` and other Julia options | `julia_args` |
 | `perf stat …`, `taskset …` before `julia` | `prefix` |
 | A baseline checkout beside the new one (`TREEAMR_BASE`) | a variant: `snapshot --variant base=<directory>`, then `variant = "base"` in a run |
 | `$OUT/<stem>.tsv`, one output file per run | each run's `output.log`, in its own job directory; files the script writes land there too |
-| A table printed at the end (`awk` over the outputs) | `[after] cmd` |
+| A table printed at the end (`awk` over the outputs) | `[after] cmd`. `simlaunch after` prints it again later, with `--checkout` from a corrected script |
 | The project's copy of `simwatch.sh`, stages | nothing: every run has a SimWatch file, written by the job |
 | `rsync` of the checkout to the cluster, a fixed tree there | `snapshot` and `prepare` |
 | `--requeue`, `--open-mode=append`, a resume-from-checkpoint option | `checkpoints = true` and `[restart]`; see "Restarts" in `SPEC.md` |
@@ -81,7 +85,7 @@ Each of these needs a decision in the project, not a key in the spec.
   several times, the versions in another order each round, has no
   counterpart: runs execute in the order of the spec. Write the rounds out
   as runs (`base-8x8-r1`, `new-8x8-r1`, `new-8x8-r2`, `base-8x8-r2`), or
-  generate the spec file with a few lines of Julia in the project.
+  let a spec in Julia build them in that order.
 - **A working directory inside the checkout.** A run starts in its own job
   directory, never in the source tree, which is read-only on some sites. A
   script that reads files relative to its working directory must find them

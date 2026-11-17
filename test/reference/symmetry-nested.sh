@@ -197,6 +197,31 @@ restart_source() {
     echo "$found"
 }
 
+# cpu_model: the CPU of this node, as lscpu or macOS names it.
+cpu_model() {
+    local m
+    m=$(lscpu 2>/dev/null | sed -n 's/^Model name:[[:space:]]*//p' | head -n 1)
+    if [ -z "$m" ]; then m=$(sysctl -n machdep.cpu.brand_string 2>/dev/null); fi
+    echo "${m:-unknown}" | tr -d '"\\'
+}
+
+# job_record RUN-INDEX: where and when this job runs the run; kept in the
+# job's directory as simlaunch-job.toml, with the results.
+job_record() {
+    local g
+    echo "run = \"$SPEC-${LABELS[$1]}\""
+    echo "job_id = \"$JOBID\""
+    echo "started = $(sw_now)"
+    echo "host = \"$(hostname -s)\""
+    echo "cpu = \"$(cpu_model)\"        # of this host; a job's other nodes can differ"
+    if [ -n "${SLURM_JOB_NODELIST:-}" ]; then echo "nodes = \"$SLURM_JOB_NODELIST\""; fi
+    if [ -n "${SLURM_JOB_PARTITION:-}" ]; then echo "partition = \"$SLURM_JOB_PARTITION\""; fi
+    if [ "$GPUS" -gt 0 ]; then
+        g=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | sort -u | paste -sd, - | tr -d '"\\')
+        if [ -n "$g" ]; then echo "gpu = \"$g\""; fi
+    fi
+}
+
 # run_one RUN-INDEX: run it in its job directory, keep its SimWatch file
 # current, and make the directory read-only when it has ended. Call in a
 # subshell; exits with the run's exit code.
@@ -206,6 +231,7 @@ run_one() {
     cd "$jobdir" || exit 1
     grep -qxF "$JOBID" "$dir/.simlaunch-jobs" 2>/dev/null || echo "$JOBID" >> "$dir/.simlaunch-jobs"
     echo "$JOBID running" > "$dir/.simlaunch-job"
+    job_record "$i" > "$jobdir/simlaunch-job.toml"
     RESTART_ARGS=()
     if [ "$CHECKPOINTS" = 1 ]; then
         mkdir -p "$jobdir/ck"
@@ -378,17 +404,17 @@ done
 run_0() {   # base-8r
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0
     export OMP_NUM_THREADS=1
-    exec srun --mpi=pmi2 --nodes=1 --ntasks=8 --cpus-per-task=8 --cpu-bind=none bash -c 'l=${SLURM_LOCALID:-0}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/base-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
+    exec env -u SLURM_CPUS_PER_TASK srun --mpi=pmi2 --kill-on-bad-exit=1 --nodes=1 --ntasks=8 --cpus-per-task=8 --cpu-bind=none bash -c 'l=${SLURM_LOCALID:-0}; n=; read -r _ n _ < <(numactl -H 2>/dev/null); if [ "${n:-0}" -lt 8 ]; then echo "placement: $(hostname -s) has ${n:-no} NUMA domains, too few for 8 ranks with one domain each" >&2; exit 1; fi; d=$(( l * n / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/base-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
 }
 run_1() {   # new-16r
     set +u; module load nvhpc-hpcx-cuda12/24.9; set -u
     export OMP_NUM_THREADS=1
-    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl --bind-to none -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; d=$(( l * 8 / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
+    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-system "$TOOLS"/mpiexec.jl --bind-to none -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; n=; read -r _ n _ < <(numactl -H 2>/dev/null); if [ "${n:-0}" -lt 8 ]; then echo "placement: $(hostname -s) has ${n:-no} NUMA domains, too few for 8 ranks with one domain each" >&2; exit 1; fi; d=$(( l * n / 8 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-system "$PROJECT"/examples/hello.jl n=1
 }
 run_2() {   # serial
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0
     export OMP_NUM_THREADS=1
-    exec env TOYVAR=x bash -c 'l=0; d=$(( l * 8 / 1 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
+    exec env TOYVAR=x bash -c 'l=0; n=; read -r _ n _ < <(numactl -H 2>/dev/null); if [ "${n:-0}" -lt 1 ]; then echo "placement: $(hostname -s) has ${n:-no} NUMA domains, too few for 1 rank with one domain each" >&2; exit 1; fi; d=$(( l * n / 1 )); exec numactl --cpunodebind=$d --membind=$d "$@"' numa "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-jll "$PROJECT"/examples/hello.jl n=1
 }
 
 # One run after another.

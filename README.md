@@ -134,6 +134,10 @@ a spec. Further fields, in short:
 | `sbatch_args`, `prefix` | lines for the batch header, and words before the Julia command, as written |
 | `[after] cmd` | a shell command after the last run |
 
+A spec can also be a Julia file, `jobs/<name>.jl`, whose value is the spec:
+for runs that are a product of versions, sizes and rounds. See "A spec in
+Julia" in [`SPEC.md`](SPEC.md).
+
 [`examples/treeamr-nested.toml`](examples/treeamr-nested.toml) uses most of
 them.
 
@@ -144,6 +148,7 @@ simlaunch wait s1 jobs/s1-sweep.toml --site trillium   # until its jobs have end
 simlaunch status s1                 # one table of the study's runs on all its sites
 simlaunch fetch s1                  # results into <project>/.claude/data/s1/<site>/
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
+simlaunch after s1 jobs/s1-sweep.toml --site trillium   # the spec's [after] command again
 simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
 ```
 

@@ -379,14 +379,69 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                node, sbatch_args, checkpoints, mutable, restart, after, combine, runs)
 end
 
+"""
+    load_spec(file) -> Dict
+
+A spec, as TOML gives it. `file` is a TOML file, or a Julia file (`.jl`)
+whose value is the spec: nothing after this function can tell the two apart.
+"""
 function load_spec(file::AbstractString)
     isfile(file) || fail("no such spec: $file")
+    endswith(file, ".jl") && return TOML.parse(spec_toml(file))
     try
         return TOML.parsefile(file)
     catch err
         err isa TOML.ParserError || rethrow()
         fail("$file: ", sprint(showerror, err))
     end
+end
+
+"""
+    spec_toml(file) -> String
+
+The spec as TOML text: the file itself, or for a Julia file what it
+evaluates to. A Julia spec is evaluated in a module of its own, with Julia's
+standard library and nothing of the study; its last expression is the spec,
+written with named tuples or dictionaries where TOML has tables and with
+tuples or arrays where it has lists.
+"""
+function spec_toml(file::AbstractString)
+    endswith(file, ".jl") || return read(file, String)
+    # the standard library can be loaded, also where the tool runs with a load path of its own
+    stdlib = "@stdlib" in LOAD_PATH
+    stdlib || push!(LOAD_PATH, "@stdlib")
+    value = try
+        Base.include(Module(:Spec), abspath(file))
+    catch err
+        err isa LoadError && (err = err.error)
+        fail("$file: ", sprint(showerror, err))
+    finally
+        stdlib || filter!(!=("@stdlib"), LOAD_PATH)
+    end
+    value isa Union{NamedTuple,AbstractDict} ||
+        fail("$file: its last expression is the spec, a named tuple or a dictionary; it is a $(typeof(value))")
+    text = sprint(io -> TOML.print(io, spec_value(value, file, "the spec")))
+    return "# What $(basename(file)) evaluated to.\n\n" * text
+end
+
+"A value of a Julia spec, as TOML holds it. `where` names it in a message."
+function spec_value(value, file, where)
+    if value isa NamedTuple
+        return Dict{String,Any}(string(k) => spec_value(v, file, "$where.$k") for (k, v) in pairs(value))
+    elseif value isa AbstractDict
+        all(k -> k isa Union{AbstractString,Symbol}, keys(value)) || fail("$file: the keys of $where are strings or symbols")
+        return Dict{String,Any}(string(k) => spec_value(v, file, "$where.$k") for (k, v) in value)
+    elseif value isa Union{Tuple,AbstractArray}
+        # a comprehension over two ranges is a matrix: its entries in order
+        return Any[spec_value(v, file, "$where[$k]") for (k, v) in enumerate(vec(collect(Any, value)))]
+    elseif value isa Bool || value isa AbstractString
+        return value
+    elseif value isa Integer
+        return Int64(value)
+    elseif value isa AbstractFloat
+        return Float64(value)
+    end
+    fail("$file: $where is a $(typeof(value)); a spec holds strings, numbers, true or false, lists and tables")
 end
 
 """

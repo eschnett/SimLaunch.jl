@@ -292,6 +292,85 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
 end
 
 """
+    after(study, spec; site, only_runs = [], checkout = false)
+
+Run the spec's `[after]` command again, on the site's login node, over the
+newest job directory of each run. As in a job it runs in the study's output
+directory with `PROJECT`, `SCRATCH`, `STUDY`, `SPEC`, `JOBID` and
+`SIMLAUNCH_JOBDIRS` set. `PROJECT` is the study's snapshot, or with
+`checkout` a copy of the project as it is on the laptop now, for a command
+whose script was wrong when the snapshot was taken. The output is printed and
+kept in the study's `logs/`, with a line that says which of the two it was.
+Returns the log's path.
+"""
+function after(study::AbstractString, spec::AbstractString; site::AbstractString, only_runs = String[],
+               checkout::Bool = false, io::IO = stdout)
+    s = load_site(site)
+    job = only(load_jobs(study, s, [spec]; only_runs))
+    isempty(job.after) && fail("$spec has no [after] table")
+    check_connection(s)
+    active = active_jobs(s, study, job.name)
+    isempty(active) || fail("job $(join(active, ", ")) of spec $(job.name) is queued or running on $(s.name): ",
+                            "it runs the [after] command itself when it ends")
+    code, scratch = study_code(s, study), study_scratch(s, study)
+    base = "$(job.name)-after-$(stamp())"
+    project = joinpath(code, "src", job.project)
+    from = "the study's snapshot"
+    if checkout
+        records = [p for p in load_snapshot(study)["package"] if p["dest"] == joinpath("src", job.project)]
+        isempty(records) && fail("the snapshot of study $study does not record where $(job.project) came from")
+        home = only(records)["path"]
+        isdir(home) || fail("the project's checkout is gone: $home")
+        prov = provenance(home)
+        from = "the checkout $home" * (prov.git ? " ($(prov.branch), $(prov.sha[1:10])$(prov.dirty ? ", with uncommitted changes" : ""))" : "")
+        # a copy of its own, read-only: the study's snapshot stays what its jobs ran
+        project = joinpath(scratch, "after", base, basename(job.project))
+        mktempdir() do dir
+            excludes = ["--exclude=$e" for e in DEFAULT_EXCLUDES]
+            ignore = joinpath(home, ".simlaunchignore")
+            isfile(ignore) && push!(excludes, "--exclude-from=$ignore")
+            run(`rsync -a $excludes $(home * "/") $(dir * "/")`)
+            push_tree(s, dir, project)
+        end
+        runsite(s, "chmod -R a-w " * q(project))
+    end
+    log = joinpath(scratch, "logs", base * ".out")
+    runs = ["$(job.name)-$(r.label)" for r in job.runs]
+    script = """
+        set -u
+        cd $(shpath(scratch)) || exit 1
+        dirs=(); ids=
+        for run in $(join(q.(runs), " ")); do
+            d=\$(ls -d "\$run"/[0-9][0-9][0-9]-* 2>/dev/null | tail -n 1)
+            if [ -z "\$d" ] && [ -d "\$run/mutable" ]; then d=\$run/mutable; fi
+            if [ -z "\$d" ]; then continue; fi
+            dirs+=("\$PWD/\$d")
+            id=; if [ -f "\$run/.simlaunch-job" ]; then read -r id _ < "\$run/.simlaunch-job"; fi
+            case ",\$ids," in *",\$id,"*) ;; *) ids=\${ids:+\$ids,}\$id ;; esac
+        done
+        if [ \${#dirs[@]} = 0 ]; then echo "no run of spec $(job.name) has a job directory" >&2; exit 1; fi
+        mkdir -p logs
+        {
+            echo "=== the [after] command of spec $(job.name), run again on \$(hostname -s), \$(date) ==="
+            echo "=== PROJECT is $(replace(from, r"[\"\$`\\]" => "")) ==="
+            STUDY=$(q(study)) SPEC=$(q(job.name)) PROJECT=$(shpath(project)) SCRATCH=\$PWD JOBID=\$ids SIMLAUNCH_JOBDIRS="\${dirs[*]}"
+            export STUDY SPEC PROJECT SCRATCH JOBID SIMLAUNCH_JOBDIRS
+            # as `combine`: Julia started here compiles into a depot of its own, not into the study's
+            export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study))):
+            unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET
+            bash -c $(q(job.after)); rc=\$?
+            if [ \$rc != 0 ]; then echo "the [after] command failed with exit code \$rc"; fi
+            exit \$rc
+        } 2>&1 | tee $(shpath(log))
+        exit \${PIPESTATUS[0]}
+        """
+    ok = success(pipeline(sitecmd(s, script); stdout = io, stderr))
+    ok || fail("`simlaunch after` failed for $spec on $(s.name); what it printed is above")
+    println(io, "log: $log")
+    return log
+end
+
+"""
     wait_spec(study, spec; site, only_runs = [], poll = 20) -> Bool
 
 Wait until no job of the spec is queued or running on the site, printing each
