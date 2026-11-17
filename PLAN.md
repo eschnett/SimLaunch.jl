@@ -799,6 +799,12 @@ started. With checkpoints a run is `stopped`, as before, since a later job
 can continue it; only the command makes it `cancelled`, and a job whose run
 is marked submits no successor.
 
+Ran on Symmetry on 2026-11-17 with a toy study: the command on a running
+job (602617) and on a job waiting in the queue (602618) left both runs
+`cancelled` with the message given, and a plain `scancel` of a running job
+(602619) left its running run "cancelled in 001-602619 on cn103" and the run
+that had not started "cancelled before this run finished".
+
 **Wait.** `simlaunch wait <study> <spec>` watches until no job of the spec
 is queued or running, printing each run's status as it changes, and exits
 with 0 only when every run has finished; `submit --wait` is `submit` followed
