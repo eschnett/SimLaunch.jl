@@ -97,15 +97,18 @@ function run_command(job::Job, r::Run)
         rec = site.mpi[r.mpi]
         if rec.launcher == "srun"
             push!(words, "srun")
-            append!(words, q.(rec.launcher_args))
+            append!(words, q.(rec.launcher_args), q.(r.launcher_args))
             # else the other ranks of one that died wait in MPI until the time limit
             push!(words, "--kill-on-bad-exit=1", "--nodes=$(r.nodes)", "--ntasks=$(r.ranks)",
                   "--cpus-per-task=$(job.cores * r.nodes ÷ r.ranks)", "--cpu-bind=none")
         else
             # the binary's own mpiexec, found through MPI.jl
             push!(words, julia, "--startup-file=no", "--project=$envdir", "\"\$TOOLS\"/mpiexec.jl")
-            append!(words, q.(rec.launcher_args))
+            append!(words, q.(rec.launcher_args), q.(r.launcher_args))
             push!(words, "-n", string(r.ranks))
+            # srun gives every rank the job's environment. An mpiexec need not, on another node: the run's
+            # variables are set again on the rank's side
+            isempty(r.vars) || append!(words, ["env"; ["$k=$(q(v))" for (k, v) in sort!(collect(r.vars))]])
         end
     elseif job.pin
         push!(words, "srun")
@@ -113,20 +116,24 @@ function run_command(job::Job, r::Run)
         push!(words, "--cpu-bind=none")
     end
     if r.placement == "numa"
-        # rank i of the R on its node gets NUMA domain i·D/R: its cores and its memory. D is counted on the
-        # node (`numactl -H` starts with "available: 8 nodes (0-7)"): a partition can mix node types, and the
-        # profile's number is only what `submit` checks against
+        # rank i of the R on its node gets the D/R NUMA domains from i·D/R on: their cores and their memory.
+        # A run without ranks gets domain 0. D is counted on the node (`numactl -H` starts with
+        # "available: 8 nodes (0-7)"): a partition can mix node types, and the profile's number is only what
+        # `submit` checks against
         rpn = max(r.ranks, 1) ÷ r.nodes
         # which rank on its node this is: srun says so; under an mpiexec the batch step's SLURM_LOCALID (0) is
         # inherited and says nothing, and Open MPI or Hydra do
         id = srun && r.ranks > 0 ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
+        width = r.ranks > 0 ? "\$(( n / $rpn ))" : "1"
         bind = "l=$id; n=; read -r _ n _ < <(numactl -H 2>/dev/null); " *
-               "if [ \"\${n:-0}\" -lt $rpn ]; then echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, " *
-               "too few for $rpn rank$(rpn == 1 ? "" : "s") with one domain each\" >&2; exit 1; fi; " *
-               "d=\$(( l * n / $rpn )); exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
+               "if [ \"\${n:-0}\" -lt $rpn ] || [ \$(( n % $rpn )) != 0 ]; then " *
+               "echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, " *
+               "which $rpn rank$(rpn == 1 ? "" : "s") cannot share evenly\" >&2; exit 1; fi; " *
+               "w=$width; d=\$(( l * w )); if [ \$w -gt 1 ]; then d=\$d-\$(( d + w - 1 )); fi; " *
+               "exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
         push!(words, "bash", "-c", q(bind), "numa")
     end
-    append!(words, r.prefix)                           # as written
+    append!(words, q.(r.prefix))
     push!(words, julia, "-t", job.pin ? "$(r.threads),0" : string(r.threads))
     append!(words, q.(r.julia_args))
     push!(words, "--project=$envdir")

@@ -80,12 +80,13 @@ In `[site.<name>]`, or at the top level as a default.
 | `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn099"]` |
 | `mpi` | the site's default, for a run with `ranks` | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
 | `placement` | none | `"numa"` |
-| `prefix` | none | Words before the Julia command, as written: `"perf stat -e cache-misses"` |
+| `prefix` | none | Words before the Julia command: `"perf stat -e cache-misses"`, split as a shell would, or a list of words. Each word reaches the command as it is: a `$VAR` in it is not expanded |
+| `launcher_args` | `[]` | Further arguments of the MPI launcher (`srun` or `mpiexec`), after the recipe's own, for the runs with `ranks`. They belong to one MPI, so to one site: write them in `[site.<name>]` |
 
 The default of `threads` is the allocation's cores for sequential runs, the
 cores divided by the number of runs for parallel ones, the cores divided by
-the ranks on a node for a run with ranks, and one NUMA domain's cores with
-`placement = "numa"`.
+the ranks on a node for a run with ranks, and one NUMA domain's cores for
+a run without ranks that has `placement = "numa"`.
 
 A partition can mix node types. A benchmark names its node with `node`, or
 keeps off the nodes that differ with `sbatch_args = ["--exclude=cn099"]` or
@@ -102,7 +103,7 @@ AMD queues keep off cn112, which `queue = "largememq"` asks for. Which CPU a run
 | `threads` | the job's | A number, or a list: one run per count, labelled `<label>-t<N>` |
 | `julia_args` | the job's | Replaces the job's |
 | `vars` | the job's | Added to the job's |
-| `env`, `mpi`, `placement`, `prefix` | the job's | As above, for this run |
+| `env`, `mpi`, `placement`, `prefix`, `launcher_args` | the job's | As above, for this run. `launcher_args` needs `ranks` |
 | `variant` | `"default"` | Which version of the study's packages: see [Environments](#environments) |
 | `ranks` | none | MPI ranks; the run is then started by its recipe's launcher |
 | `nodes` | the job's nodes with `ranks`, else 1 | The nodes the run's ranks are spread over |
@@ -142,7 +143,7 @@ cmd = "bench/nested.jl mpi"
 mpi = "jll"                         # a recipe of the site's profile; without it, the site's default
 ranks = 8
 threads = 8                         # per rank
-placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
+placement = "numa"                  # rank i of the 8 on its node: NUMA domain i of 8
 ```
 
 - `mpi` names a recipe in `sites/<site>.toml`, `[mpi.<recipe>]`: which MPI
@@ -156,12 +157,19 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
   work around one.
 - `ranks` starts the run through the recipe's launcher. A run with `mpi` but
   without `ranks` runs in the recipe's environment without a launcher.
-- `placement = "numa"` binds each rank to one NUMA domain, its cores and
-  its memory, with `numactl`: rank i of the R on a node gets domain i·D/R.
+- `placement = "numa"` binds each rank to its share of the node's NUMA
+  domains, their cores and their memory, with `numactl`: rank i of the R on
+  a node gets the D/R domains from i·D/R on. With 8 ranks on 8 domains that
+  is one domain each; with 2 ranks, rank 0 has domains 0 to 3 and rank 1
+  domains 4 to 7. R must divide D: `submit` refuses 3 ranks on 8 domains.
   A run without ranks gets domain 0. D is counted on the node when the run
-  starts. A node with fewer domains than ranks ends the run at once; the
-  profile's count is what `submit` checks and what the default of `threads`
-  comes from.
+  starts, and a node whose domains the ranks cannot share evenly ends the
+  run at once; the profile's count is what `submit` checks.
+- A run's `vars` reach every rank on every node, under either launcher:
+  `srun` passes the job's environment on, and for an `mpiexec` the
+  variables are set again in front of each rank's command. Settings of
+  Open MPI are best written this way (`vars = { OMPI_MCA_io = "romio321" }`);
+  `launcher_args` is for what has no variable.
 - Ranks started with `srun` end together: when one exits with an error, the
   others are stopped (`--kill-on-bad-exit=1`).
 - A job on several nodes has `resources = { nodes = N }`; a run's `nodes`

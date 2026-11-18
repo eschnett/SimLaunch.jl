@@ -14,7 +14,8 @@ struct Run
     nodes::Int
     placement::String                 # "" or "numa"
     mpi::String                       # a recipe of the site's profile, or ""
-    prefix::Vector{String}            # words put before the Julia command, as written
+    prefix::Vector{String}            # words put before the Julia command, each quoted
+    launcher_args::Vector{String}     # further arguments of the MPI launcher, after the recipe's
 end
 
 "The restart contract: the names of the driver's arguments, and how its checkpoints are told apart."
@@ -55,10 +56,10 @@ end
 # Keys that may depend on the site: read from [site.<name>], with the top
 # level as the default.
 const SITE_KEYS = ["time", "resources", "mode", "threads", "pin", "env", "blas_threads",
-                   "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "prefix"]
+                   "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "prefix", "launcher_args"]
 const TOP_KEYS = ["name", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
 const RUN_KEYS = ["label", "cmd", "threads", "julia_args", "vars", "variant", "env", "ranks", "nodes",
-                  "placement", "mpi", "prefix"]
+                  "placement", "mpi", "prefix", "launcher_args"]
 const RESTART_KEYS = ["from", "to", "walltime", "margin", "continue_code", "temporary", "compare"]
 
 """
@@ -284,8 +285,10 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         words = Base.shell_split(cmd)
         args = haskey(r, "julia_args") ? string_list(r["julia_args"], "$where: `julia_args`") : job_args
         vars = merge(job_vars, var_table(get(r, "vars", Dict{String,Any}()), "$where: `vars`"))
-        prefix = get(r, "prefix", setting("prefix", ""))
-        prefix isa AbstractString || fail("$where: `prefix` is the words put before the Julia command")
+        prefix = get(r, "prefix", setting("prefix", String[]))
+        prefix isa AbstractString || prefix isa AbstractVector && all(w -> w isa AbstractString, prefix) ||
+            fail("$where: `prefix` is the words put before the Julia command, as a string or a list of strings")
+        prefix = prefix isa AbstractString ? Base.shell_split(prefix) : collect(String, prefix)
 
         variant = get(r, "variant", "default")
         variant in variants ||
@@ -341,15 +344,24 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
             gpus > 0 && fail("$where: `placement = \"numa\"` is for CPU jobs")
             site.numa > 1 || fail("$where: the profile of $(site.name) names no NUMA domains (`numa` in its node table)")
             rpn = max(ranks, 1) ÷ run_nodes
-            rpn <= site.numa || fail("$where: $rpn ranks on a node do not fit its $(site.numa) NUMA domains, one domain a rank")
+            rpn <= site.numa ||
+                fail("$where: $rpn ranks on a node do not fit its $(site.numa) NUMA domains, at least one domain a rank")
+            site.numa % rpn == 0 ||
+                fail("$where: $rpn ranks on a node cannot share its $(site.numa) NUMA domains evenly; ",
+                     "`placement = \"numa\"` gives every rank the same number of domains")
         end
+        # the launcher's own arguments: the job's are for its runs with ranks, a run's own need ranks
+        haskey(r, "launcher_args") && ranks == 0 && fail("$where: `launcher_args` is for a run with `ranks`")
+        launcher_args = ranks == 0 ? String[] :
+                        string_list(get(r, "launcher_args", setting("launcher_args", String[])), "$where: `launcher_args`")
         pin && (ranks > 0 || placement != "") &&
             fail("$where: `pin = true` binds threads to the cores from 0 on, which a run with `ranks` or `placement` must not; ",
                  "such a run is bound by its placement")
 
         # threads: per rank
         rpn = max(ranks, 1) ÷ run_nodes
-        share = placement == "numa" ? max(1, cores ÷ site.numa) : max(1, cores ÷ rpn)
+        # a rank has its share of the node, and so of its NUMA domains; a placed run without ranks has one domain
+        share = placement == "numa" && ranks == 0 ? max(1, cores ÷ site.numa) : max(1, cores ÷ rpn)
         default_threads = get(table, "threads", get(spec, "threads",
                               ranks > 0 || placement == "numa" ? share : mode === :parallel ? max(1, cores ÷ nruns) : cores))
         threads = get(r, "threads", default_threads)
@@ -360,7 +372,7 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                 fail("$file: run $label asks for $(rpn == 1 ? "" : "$rpn ranks of ")$t threads, but $what $cores cores")
             push!(runs, Run(scan ? "$label-t$t" : label, words, t, args, vars, variant, env,
                             env_dir(project, env, own; variant, recipe), ranks, run_nodes, placement, recipe,
-                            Base.shell_split(prefix)))
+                            prefix, launcher_args))
         end
     end
     allunique(r.label for r in runs) || fail("$file: two runs have the same label")

@@ -746,12 +746,42 @@ end
                 (p.exitcode, String(take!(err)))
             end
             numactl(16)
-            @test placed("3") == (0, "--cpunodebind=6 --membind=6 the run\n")
+            @test placed("3") == (0, "--cpunodebind=6-7 --membind=6-7 the run\n")
             numactl(8)
             @test placed("3") == (0, "--cpunodebind=3 --membind=3 the run\n")
-            numactl(4)
-            code, said = placed("3")
-            @test code == 1 && occursin("has 4 NUMA domains, too few for 8 ranks", said)
+            for n in (4, 12)                                                          # too few, and not a multiple
+                numactl(n)
+                code, said = placed("3")
+                @test code == 1 && occursin("has $n NUMA domains, which 8 ranks cannot share evenly", said)
+            end
+            # fewer ranks than domains: each rank has its share of them, and of the cores
+            j2 = job(replace(nested, "ranks = 8" => "ranks = 2\nlauncher_args = [\"--label\", \"a b\"]"), "symmetry")
+            @test j2.runs[1].threads == 32
+            cmd = SimLaunch.run_command(j2, j2.runs[1])
+            @test occursin("srun --mpi=pmi2 --label 'a b' --kill-on-bad-exit=1 --nodes=1 --ntasks=2 --cpus-per-task=32 ", cmd)
+            bind = match(r"bash -c ('[^']*') numa ", cmd)[1]
+            numactl(8)
+            @test placed("0") == (0, "--cpunodebind=0-3 --membind=0-3 the run\n")
+            @test placed("1") == (0, "--cpunodebind=4-7 --membind=4-7 the run\n")
+            # a run without ranks keeps to one domain
+            @test j.runs[3].threads == 8
+            bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(j, j.runs[3]))[1]
+            @test placed("0") == (0, "--cpunodebind=0 --membind=0 the run\n")
+            @test_throws "evenly" job(replace(nested, "ranks = 8" => "ranks = 3"), "symmetry")
+            # a prefix is words, each quoted: as a string split as a shell would, or as a list
+            @test occursin(" numa perf stat -e cache-misses \"\$JULIA\" ", SimLaunch.run_command(j, j.runs[2]))
+            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = \"env 'A=b c' X=\$HOME\""), "symmetry")
+            @test jp.runs[2].prefix == ["env", "A=b c", "X=\$HOME"]
+            @test occursin(" env 'A=b c' 'X=\$HOME' ", SimLaunch.run_command(jp, jp.runs[2]))
+            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = [\"taskset\", \"-c\", \"0-7\", \"a b\"]"), "symmetry")
+            @test occursin(" taskset -c 0-7 'a b' ", SimLaunch.run_command(jp, jp.runs[2]))
+            @test_throws "`prefix`" job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = 3"), "symmetry")
+            # the launcher's arguments are for runs with ranks
+            @test_throws "`launcher_args` is for a run with `ranks`" job(replace(nested, "vars = { TOYVAR = \"x\" }" => "launcher_args = [\"-v\"]"), "symmetry")
+            # under an mpiexec a run's variables are set for the launcher and again for every rank
+            jm = job(replace(nested, "mpi = \"system\"" => "mpi = \"hpcx\"\nvars = { ROMIO_HINTS = \"/a b/hints\" }"), "symmetry")
+            cmd = SimLaunch.run_command(jm, jm.runs[2])
+            @test startswith(cmd, "env ROMIO_HINTS='/a b/hints' ") && occursin(" -n 16 env ROMIO_HINTS='/a b/hints' bash -c ", cmd)
             @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "symmetry")
             @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "symmetry")
             @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "symmetry")

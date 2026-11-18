@@ -131,10 +131,10 @@ a spec. Further fields, in short:
 | `ranks = 8` | MPI ranks, started by the site's default MPI recipe; `threads` is then per rank |
 | `mpi = "jll"` | another MPI recipe of the site's profile |
 | `nodes = 2` | in `resources`: the job's nodes; in a run: the nodes its ranks are spread over |
-| `placement = "numa"` | one NUMA domain per rank, with `numactl` |
+| `placement = "numa"` | each rank on its share of the node's NUMA domains, with `numactl` |
 | `pin = true` | `JULIA_EXCLUSIVE=1` under `srun --cpu-bind=none`; not with `ranks` or `placement` |
 | `node = "cn095"` | a named node |
-| `sbatch_args`, `prefix` | lines for the batch header, and words before the Julia command, as written |
+| `sbatch_args`, `prefix`, `launcher_args` | lines for the batch header, words before the Julia command, and arguments of the MPI launcher |
 | `[after] cmd` | a shell command after the last run |
 
 A spec can also be a Julia file, `jobs/<name>.jl`, whose value is the spec:

@@ -572,10 +572,13 @@ environment of its own per recipe, `envs/<variant>-<kinds>-<recipe>/`.
 
 **Placement.** `pin = true` is `JULIA_EXCLUSIVE=1` with
 `srun --cpu-bind=none` and `-t N,0`. `placement = "numa"` binds rank i of
-the R on its node to NUMA domain i·D/R with `numactl --cpunodebind
---membind`; a run without ranks gets domain 0. D is counted on the node
-when the run starts (`numactl -H`), and a node with fewer domains than
-ranks ends the run at once. The profile's count (8 on Symmetry's EPYC 7543
+the R on its node to the D/R NUMA domains from i·D/R on, with
+`numactl --cpunodebind --membind`; a run without ranks gets domain 0.
+Until 2026-11-18 a rank had one domain whatever R was, so 2 ranks used 2
+of 8 domains; TreeIOHDF5's checkpoint benchmark, with 1, 2 and 4 ranks a
+node, left those runs unbound instead. R must divide D. D is counted on
+the node when the run starts (`numactl -H`), and a node whose domains the
+ranks cannot share evenly ends the run at once. The profile's count (8 on Symmetry's EPYC 7543
 nodes and on Trillium, 6 on Nibi) is what `submit` checks and what the
 default of `threads` comes from. The reason is Symmetry's cn112 (EPYC
 8534P), which has fewer than the profile's 8: TreeAMR's nested benchmark
@@ -686,7 +689,10 @@ and all its threads to one core. What is left open:
   real code trips over the mixture; it is not implemented.
 
 **Escape hatch.** `sbatch_args` adds lines to the batch header as written,
-and a run's `prefix` is put before its Julia command as written. A need that
+a run's `prefix` is put before its Julia command, each word quoted, and
+`launcher_args` adds arguments to a run's MPI launcher. A run's `vars`
+are set for the launcher and, under an `mpiexec`, again for each rank, so
+that they reach every node whatever the launcher forwards. A need that
 one script has, such as `symmetry_affinity.sh`'s perf counters, uses these
 and becomes a field of its own only when a second script needs it.
 

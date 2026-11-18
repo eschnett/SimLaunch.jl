@@ -61,12 +61,13 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | `Pkg.add("CUDA")` into a scratch environment | `env = "cuda"`, or `"test+cuda"` |
 | `MPIPreferences.use_jll_binary()` / `use_system_binary()`, `module load` of an MPI | nothing for the site's own MPI: it is the default recipe of a run with `ranks`. `mpi = "<recipe>"` for another one of the site's profile |
 | `srun --mpi=pmi2 --ntasks=R …`, `mpiexec -n R …` | `ranks = R` and the recipe's launcher |
-| A rank script with `numactl --cpunodebind=$d --membind=$d` | `placement = "numa"` |
+| A rank script with `numactl --cpunodebind=$d --membind=$d`, one domain a rank or several | `placement = "numa"` |
 | `JULIA_EXCLUSIVE=1` with `srun --cpu-bind=none` | `pin = true` |
 | `-t N`, `OPENBLAS_NUM_THREADS` | `threads`, `blas_threads` |
 | A loop over thread counts | `threads = [1, 8, 64]` in one run |
 | A loop over anything else (sizes, shapes, versions) | one `[[run]]` per iteration, written out; for more than a few, a spec in Julia that builds the list |
 | `VAR=value julia …`, `export VAR` | `vars`, for the job or for one run |
+| `mpiexec --mca io romio321`, `-x VAR` | `vars = { OMPI_MCA_io = "romio321" }`: a run's `vars` reach every rank. `launcher_args` for an option that has no variable |
 | `--check-bounds=yes` and other Julia options | `julia_args` |
 | `perf stat …`, `taskset …` before `julia` | `prefix` |
 | A baseline checkout beside the new one (`TREEAMR_BASE`) | a variant: `snapshot --variant base=<directory>`, then `variant = "base"` in a run |
@@ -103,8 +104,8 @@ Each of these needs a decision in the project, not a key in the spec.
 - **Anything decided while the job runs**: a run that depends on another
   run's result, retries. SimLaunch has no such logic by design.
 
-If a script needs something that fits none of these, `sbatch_args` and
-`prefix` pass text through as written. Say so in the project's notes: a
+If a script needs something that fits none of these, `sbatch_args`,
+`prefix` and `launcher_args` pass text through as written. Say so in the project's notes: a
 second script with the same need is the reason to add a key.
 
 ## Checking the conversion
