@@ -275,11 +275,18 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     # a threads list is a scan: one run per count
     nruns = sum(r -> get(r, "threads", nothing) isa AbstractVector ? length(r["threads"]) : 1, run_tables)
     runs = Run[]
+    labels = String[]                                  # of every run, also those `only_runs` leaves out
     for (k, r) in enumerate(run_tables)
         where = "$file, run $k"
         check_keys(r, RUN_KEYS, where)
         label = checkname("$where: its label", get(r, "label", nothing))
         where = "$where ($label)"
+        # A run that `only_runs` leaves out is not checked: it may be written for another site, with a recipe
+        # or a placement this one does not have.
+        counts = get(r, "threads", get(table, "threads", get(spec, "threads", nothing)))
+        names = counts isa AbstractVector ? ["$label-t$t" for t in counts] : [label]
+        append!(labels, names)
+        isempty(only_runs) || any(in(only_runs), names) || continue
         cmd = get(r, "cmd", nothing)
         cmd isa AbstractString && !isempty(strip(cmd)) || fail("$where has no `cmd`")
         words = Base.shell_split(cmd)
@@ -375,11 +382,10 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                             prefix, launcher_args))
         end
     end
-    allunique(r.label for r in runs) || fail("$file: two runs have the same label")
+    allunique(labels) || fail("$file: two runs have the same label")
     if !isempty(only_runs)
         for label in only_runs
-            any(r -> r.label == label, runs) ||
-                fail("$file has no run $(repr(label)); its runs: ", join([r.label for r in runs], ", "))
+            label in labels || fail("$file has no run $(repr(label)); its runs: ", join(labels, ", "))
         end
         filter!(r -> r.label in only_runs, runs)
     end

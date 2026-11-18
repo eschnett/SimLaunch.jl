@@ -783,6 +783,14 @@ fits, the refusal lists each queue with its reason.
 from the right login node (`trig-login01` for Trillium's GPUs), and marks
 every run's SimWatch directory queued with the job ID before returning. A
 study's runs are therefore visible in SimWatch from the moment they exist.
+Every status file of a Slurm job names its cluster (`[slurm] cluster`): a
+job's `$SLURM_CLUSTER_NAME`, and at submit time `ClusterName` of
+`scontrol show config` on the submit host. Trillium is the reason: its CPU
+and GPU clusters are two Slurms (`trillium` and `grillium`) with separate
+databases on one file system, and SimWatch, which asked only the CPU
+side, showed queued GPU jobs as lost (TreeAMR, 2026-11-18). SimWatch
+compares a job with its own cluster's queue from the version after 1.5.0,
+with a `[slurm_clusters.grillium]` entry in its configuration on Trillium.
 
 **Status** reads SimWatch's files: `simlaunch status <study>…` prints one
 table of the runs on every site the study is prepared on, with each run's

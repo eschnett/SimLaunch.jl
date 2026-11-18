@@ -1,0 +1,6 @@
+#!/bin/bash
+# A stand-in for scontrol in the tests: `scontrol show config` names the cluster.
+if [ "$1 $2" = "show config" ]; then
+    echo "Configuration data as of $(date +%Y-%m-%dT%H:%M:%S)"
+    echo "ClusterName             = fakecluster"
+fi

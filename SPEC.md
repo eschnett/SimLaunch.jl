@@ -108,7 +108,9 @@ AMD queues keep off cn112, which `queue = "largememq"` asks for. Which CPU a run
 | `ranks` | none | MPI ranks; the run is then started by its recipe's launcher |
 | `nodes` | the job's nodes with `ranks`, else 1 | The nodes the run's ranks are spread over |
 
-`submit --run <label>` submits only the named runs.
+`submit --run <label>` submits only the named runs, and only they are
+checked against the site: a spec may hold a run that needs a recipe or a
+placement another site has, as long as that run is not named here.
 
 ## Environments
 

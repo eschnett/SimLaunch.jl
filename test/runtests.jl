@@ -785,6 +785,10 @@ end
             @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "symmetry")
             @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "symmetry")
             @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "symmetry")
+            # only the named runs are checked: another run may be written for a recipe this site does not have
+            jo = job(replace(nested, "\"system\"" => "\"cray\""), "symmetry"; only_runs = ["serial"])
+            @test [r.label for r in jo.runs] == ["serial"]
+            @test_throws "its runs: base-8r, new-16r, serial" job(nested, "symmetry"; only_runs = ["none"])
             @test_throws "one node only" job(replace(nested, "\"system\"" => "\"jll-fork\""), "symmetry")
             @test_throws "pin = true" job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\npin = true"), "symmetry")
             @test_throws "for site symmetry only" job(nested, "trillium")
@@ -836,12 +840,14 @@ end
             @test_throws "queued or running" submit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
             queued = TOML.parsefile(joinpath(cscratch, "chain-c", "simwatch.toml"))
             @test queued["status"] in ("queued", "running")
+            @test queued["slurm"]["cluster"] == "fakecluster"                        # which Slurm the job is in
             out = IOBuffer()
             @test wait_spec("toy", short; site = "cluster", poll = 0.5, io = out)     # the whole chain
             @test occursin(r"chain-c\s+finished", String(take!(out)))
             run_dir = joinpath(cscratch, "chain-c")
             st = TOML.parsefile(joinpath(run_dir, "simwatch.toml"))
             @test st["status"] == "finished" && st["slurm"]["previous_job_ids"] == [ids[1]]
+            @test st["slurm"]["cluster"] == "fakecluster"
             dirs = sort!(filter(startswith(r"\d\d\d-"), readdir(run_dir)))
             @test dirs == ["001-$(ids[1])", "002-$(ids[2])"]                        # the third job had nothing left to do
             @test occursin("nothing is left to do", read(joinpath(cscratch, "logs", "chain-$(ids[3]).out"), String))

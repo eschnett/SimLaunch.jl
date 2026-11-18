@@ -43,7 +43,7 @@ profile directory; the tests use both.
 - A changed generated script changes `test/reference/*.sh`, one per site:
   regenerate them and read the diff.
 - The tests run a Slurm site on the laptop: the profile `cluster` in
-  `test/runtests.jl`, with `test/fakeslurm/sbatch`, `squeue` and `scancel`
+  `test/runtests.jl`, with `test/fakeslurm/sbatch`, `squeue`, `scancel` and `scontrol`
   on the `PATH`. It covers the precompile job and its lock, chains, a
   stopped job's successor and a GPU job's header, not a real queue. MPI
   needs packages from the network and is not in the tests: try it by hand

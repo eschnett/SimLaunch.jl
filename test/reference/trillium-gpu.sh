@@ -92,6 +92,7 @@ sw_write() {
             echo "job_id = \"$SLURM_JOB_ID\""
             echo "job_name = \"${SLURM_JOB_NAME:-}\""
             echo "partition = \"${SLURM_JOB_PARTITION:-}\""
+            sw_cluster
             prev=$(grep -vxF "$JOBID" "$dir/.simlaunch-jobs" 2>/dev/null | sed 's/.*/"&"/' | paste -sd, -)
             if [ -n "$prev" ]; then echo "previous_job_ids = [$prev]"; fi
             if [ -n "$next" ]; then echo "next_job_id = \"$next\""; fi
@@ -127,6 +128,21 @@ sw_cancel() {
         -e "s|^message = .*|message = \"$msg\"|" "$f" > "$tmp" && mv -f "$tmp" "$f" && echo "${LABELS[$1]}"
 }
 
+# sw_cluster: the line that names this Slurm, for a site where one file system
+# is shared by several (Trillium's CPU and GPU clusters): SimWatch compares a
+# job only with the queue of its own cluster. A job knows the name; at submit
+# time Slurm is asked, once.
+sw_cluster() {
+    if [ -z "${SW_CLUSTER+x}" ]; then
+        SW_CLUSTER=${SLURM_CLUSTER_NAME:-}
+        if [ -z "$SW_CLUSTER" ]; then
+            SW_CLUSTER=$(scontrol show config 2>/dev/null | awk '$1 == "ClusterName" { print $3; exit }') || true
+        fi
+    fi
+    if [ -n "$SW_CLUSTER" ]; then echo "cluster = \"$SW_CLUSTER\""; fi
+    return 0
+}
+
 # sw_queued RUN-INDEX [LATER-JOBS]: a submitted job, before it starts. Does
 # nothing if the job has started already.
 sw_queued() {
@@ -148,6 +164,7 @@ sw_queued() {
             echo
             echo "[slurm]"
             echo "job_id = \"$JOBID\""
+            sw_cluster
             prev=$(sed 's/.*/"&"/' "$dir/.simlaunch-jobs" 2>/dev/null | paste -sd, -)
             if [ -n "$prev" ]; then echo "previous_job_ids = [$prev]"; fi
         fi
