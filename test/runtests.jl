@@ -546,7 +546,14 @@ end
             sleep(1.1)
             jobid = submit("toy", f; site = "local", only_runs = ["long", "next"], io = devnull)
             while !isfile(joinpath(scratch, "can-long", "001-$jobid", "result.csv")); sleep(0.2); end
+            # a look that does not wait: the job runs still
             out = IOBuffer()
+            @test wait_spec("toy", f; site = "local", once = true, io = out) === nothing
+            text = String(take!(out))
+            @test occursin(r"can-long\s+running", text) && occursin(r"can-done\s+finished", text)
+            @test occursin("job $jobid of spec can is queued or running on local", text)
+            @test SimLaunch.command(["wait", "toy", f, "--site", "local", "--once"]) == SimLaunch.ACTIVE
+            @test_throws "exclude each other" SimLaunch.command(["wait", "toy", f, "--site", "local", "--once", "--poll", "1"])
             marked = cancel("toy", f; site = "local", message = "superseded by \"can2\"", poll = 0.3, io = out)
             @test marked == ["can-long", "can-next"]
             text = String(take!(out))
@@ -579,6 +586,10 @@ end
             @test occursin("exit code 7", text) && occursin("answer = 3", text)      # with the end of its output
             # from the command line: the exit code says whether the runs finished
             @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--poll", "0.3"]) == 1
+            # a look that does not wait, once the jobs have ended
+            @test wait_spec("toy", good; site = "local", once = true, io = devnull) === true
+            @test SimLaunch.command(["wait", "toy", good, "--site", "local", "--once"]) == 0
+            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--once"]) == 1
         end
 
         @testset "a spec in Julia, a job's record, and the [after] command again" begin

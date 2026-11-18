@@ -413,16 +413,19 @@ function cancel(study::AbstractString, spec::AbstractString; site::AbstractStrin
 end
 
 """
-    wait_spec(study, spec; site, only_runs = [], poll = 20) -> Bool
+    wait_spec(study, spec; site, only_runs = [], poll = 20, once = false) -> Union{Bool,Nothing}
 
 Wait until no job of the spec is queued or running on the site, printing each
 run's status as it changes, and return whether every run has finished. This
 covers a chain of jobs, also a successor that a stopped job submits itself.
 It only watches: interrupted, it can be started again, and the jobs are not
 affected. A run that is not finished gets the end of its output printed.
+
+With `once`, it looks once and does not wait: it prints every run's status
+and returns `nothing` while a job of the spec is queued or running.
 """
 function wait_spec(study::AbstractString, spec::AbstractString; site::AbstractString, only_runs = String[],
-                   poll = 20, io::IO = stdout)
+                   poll = 20, once = false, io::IO = stdout)
     s = load_site(site)
     job = only(load_jobs(study, s, [spec]; only_runs))
     check_connection(s)
@@ -445,6 +448,11 @@ function wait_spec(study::AbstractString, spec::AbstractString; site::AbstractSt
         active = active_jobs(s, study, job.name)
         report(states())
         isempty(active) && break
+        if once
+            println(io, "job$(length(active) == 1 ? "" : "s") $(join(active, ", ")) of spec $(job.name) ",
+                    length(active) == 1 ? "is" : "are", " queued or running on $(s.name)")
+            return nothing
+        end
         sleep(poll)
     end
     final = states()

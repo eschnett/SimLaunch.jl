@@ -177,6 +177,7 @@ them.
 
 ```bash
 simlaunch wait s1 jobs/s1-sweep.toml --site trillium   # until its jobs have ended; fails unless all runs finished
+simlaunch wait s1 jobs/s1-sweep.toml --site trillium --once   # one look: exit code 3 while a job is queued or running
 simlaunch status s1                 # one table of the study's runs on all its sites
 simlaunch fetch s1                  # results into <project>/simlaunch-data/s1/<site>/; --to names another place
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
@@ -189,7 +190,9 @@ simlaunch clean s1 --site trillium  # lists the study's directories there; delet
 on a cluster; that is also how a spec runs in CI
 ([`CONVERTING.md`](CONVERTING.md), "In CI"). Waiting only watches: when it
 is interrupted, or the connection drops, the jobs go on, and `wait` can be
-started again.
+started again. `wait --once` looks once, for a script that checks now and
+then: it exits with 0 when every run has finished, 1 when the jobs have
+ended without that, and 3 while a job of the spec is queued or running.
 
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
 `--with-checkpoints` and `--max-size` change that. `clean` refuses while a

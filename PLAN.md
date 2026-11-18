@@ -863,7 +863,10 @@ by it. It covers a chain, also a successor that a stopped job submits. It
 asks the queue over ssh and reads the runs' SimWatch files, since Slurm's
 own state does not tell a job whose run failed from one that finished. It
 holds no session open: interrupted, it is started again. This is also how a
-spec runs in a project's CI, as `--site local`.
+spec runs in a project's CI, as `--site local`. `wait --once` looks once and
+does not wait, for a script that checks a suite now and then, such as
+TreeGRRMHD's commit status: it exits with 3 while a job is queued or
+running, so that the script need not parse `status`'s table.
 
 **Fetch** copies a run's results back to
 `simlaunch-data/<study>/<site>/<run>/` in the project the study came from

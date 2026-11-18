@@ -1,5 +1,8 @@
 # The command line.
 
+"The exit code of `simlaunch wait --once` while a job of the spec is queued or running."
+const ACTIVE = 3
+
 const USAGE = """
     simlaunch: run Julia projects locally and on clusters
 
@@ -17,8 +20,10 @@ const USAGE = """
           --chain queues <n> jobs of a spec with checkpoints, one after another.
       simlaunch resubmit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]
           Submit the next job of a run with checkpoints.
-      simlaunch wait <study> <spec.toml> --site <site> [--run <label>]... [--poll <seconds>]
+      simlaunch wait <study> <spec.toml> --site <site> [--run <label>]... [--poll <seconds> | --once]
           Wait until no job of the spec is queued or running; fails unless every run has finished.
+          --once looks once and does not wait: exit code 0 when every run has finished,
+          1 when the jobs have ended without that, $ACTIVE while a job is queued or running.
       simlaunch status <study>... [--site <site>]
           One table of the studies' runs on the sites they are prepared on.
       simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
@@ -137,10 +142,14 @@ function command(args)
             wait_spec(pos[1], pos[2]; site = kw.site, only_runs = kw.only_runs, poll = poll_seconds(opt)) || return 1
         end
     elseif cmd == "wait"
-        pos, opt = parse_args(rest, ["site", "run", "poll"]; multi = ["run"])
-        length(pos) == 2 || fail("usage: simlaunch wait <study> <spec.toml> --site <site> [--run <label>]... [--poll <seconds>]")
-        wait_spec(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]),
-                  poll = poll_seconds(opt)) || return 1
+        pos, opt = parse_args(rest, ["site", "run", "poll"], ["once"]; multi = ["run"])
+        length(pos) == 2 || fail("usage: simlaunch wait <study> <spec.toml> --site <site> [--run <label>]... [--poll <seconds> | --once]")
+        once = haskey(opt, "once")
+        once && haskey(opt, "poll") && fail("--once and --poll exclude each other")
+        ended = wait_spec(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]),
+                          poll = once ? 0 : poll_seconds(opt), once)
+        ended === nothing && return ACTIVE
+        ended || return 1
     elseif cmd == "status"
         pos, opt = parse_args(rest, ["site"])
         isempty(pos) && fail("usage: simlaunch status <study>... [--site <site>]")
