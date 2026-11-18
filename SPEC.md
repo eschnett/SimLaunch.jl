@@ -262,7 +262,7 @@ product, where the TOML would be the same table many times:
 
 ```julia
 runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi = m)
-        for v in ("v7", "v13"), g in (1, 2, 6), m in ("jll", "system"), p in ("staged", "direct")
+        for v in ("v7", "v13"), g in (1, 2, 6), m in ("jll", "mpiabi"), p in ("staged", "direct")
         if !(m == "jll" && p == "direct")]
 
 (name = "nested",

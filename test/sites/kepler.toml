@@ -61,7 +61,7 @@ precompile_time = "0:30:00"
 compute_internet = true
 
 [mpi]
-default = "system"                     # for a run that names no recipe
+default = "mpiabi"                     # for a run that names no recipe
 
 # MPICH_jll under srun; the variable keeps MPICH from crashing in its first collective.
 [mpi.jll]
@@ -78,19 +78,20 @@ env = { HYDRA_LAUNCHER = "fork", MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE =
 # HPC-X's Open MPI 4.1.7, CUDA-aware, through mpi_abi_wrapper (MPI.jl's abi "MPIABI"),
 # under its own mpiexec: for CPU and for GPU jobs, on one node or several. Ran on an AMD
 # node and on an H200 with device buffers on 2026-11-17.
-[mpi.system]
+[mpi.mpiabi]
+binary = "system"                      # the site's own MPI
 modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
 multi_node = true
 env = { OMP_NUM_THREADS = "1" }
-[mpi.system.preferences]
+[mpi.mpiabi.preferences]
 library_names = ["/home/user/hpcx-2.20-mpi-abi/lib/libmpi_abi.so"]
 mpiexec = "/home/user/hpcx-2.20-mpi-abi/bin/mpiexec"
 abi = "MPIABI"
 
 # The same Open MPI loaded by MPI.jl itself, without the wrapper. Ran on CPU nodes and
-# with two H200s (device buffers handed to MPI) on 2026-11-16, then under the name `system`.
+# with two H200s (device buffers handed to MPI) on 2026-11-16, first under the name `system`.
 [mpi.hpcx]
 binary = "system"
 modules = ["nvhpc-hpcx-cuda12/24.9"]

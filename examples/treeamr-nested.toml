@@ -81,8 +81,8 @@ ranks = 6
 threads = 32
 
 [[run]]                             # the same under the site's MPI, Open MPI
-label = "new-6x32-system"
+label = "new-6x32-mpiabi"
 cmd = "bench/nested.jl mpi"
-mpi = "system"
+mpi = "mpiabi"
 ranks = 6
 threads = 32

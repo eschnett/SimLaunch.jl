@@ -65,22 +65,22 @@ factor, that is a master connection which you open yourself
 (`ControlMaster` in `~/.ssh/config`). Change `[connect]` in your profile if
 your host has another name.
 
-The clusters' own MPI (the recipe `system`) needs two things that you build
+The clusters' own MPI (the recipe `mpiabi`) needs two things that you build
 once on the cluster, so it has placeholders too: a Julia that can load the
 cluster's libraries, and
 [mpi_abi_wrapper](https://github.com/eschnett/mpi_abi_wrapper) built
 against the cluster's Open MPI. Until then the default recipe is `jll`,
 which needs neither and is several times slower between nodes. A run that
-asks for `system` before it is set up is refused. To set it up, add to your
+asks for `mpiabi` before it is set up is refused. To set it up, add to your
 profile:
 
 ```toml
 [mpi]
-default = "system"
+default = "mpiabi"
 
-[mpi.system]
+[mpi.mpiabi]
 julia = "~/julia-1.13.4-trillium/bin/julia"
-[mpi.system.preferences]
+[mpi.mpiabi.preferences]
 library_names = ["/home/USER/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
 mpiexec = "/home/USER/openmpi-4.1.5-mpi-abi/bin/mpiexec"
 ```

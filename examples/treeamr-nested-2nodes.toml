@@ -36,8 +36,8 @@ ranks = 12
 threads = 32
 
 [[run]]
-label = "new-12x32-system"
+label = "new-12x32-mpiabi"
 cmd = "bench/nested.jl mpi"
-mpi = "system"
+mpi = "mpiabi"
 ranks = 12
 threads = 32

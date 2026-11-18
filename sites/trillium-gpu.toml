@@ -42,18 +42,19 @@ precompile_tasks = 8                   # login nodes are shared
 compute_internet = false               # prepare fetches everything; jobs run offline
 
 [mpi]
-default = "system"                     # for a run that names no recipe
+default = "mpiabi"                     # for a run that names no recipe
 
 # Open MPI 4.1.5 of StdEnv/2023 (built with CUDA) through mpi_abi_wrapper, as on the CPU
 # side, which shares its home. Under the wrapper's mpiexec: srun is not for a GPU job.
 # Two ranks on an H100 exchanged host and device buffers on 2026-11-17 (job 1355034).
-[mpi.system]
+[mpi.mpiabi]
+binary = "system"                      # the site's own MPI
 julia = "<a Julia that can load the cluster's MPI: a copy patched with setrpaths.sh>"   # juliaup's Julia cannot load the site's MPI
 modules = ["StdEnv/2023", "cuda/12.9"]   # StdEnv sets the OMPI_MCA variables that keep Open MPI off libfabric; cuda swaps in the UCX that knows device memory
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
 env = { OMP_NUM_THREADS = "1" }
-[mpi.system.preferences]
+[mpi.mpiabi.preferences]
 library_names = ["<your build of mpi_abi_wrapper: .../lib64/libmpi_abi.so>"]
 mpiexec = "<your build of mpi_abi_wrapper: .../bin/mpiexec>"
 abi = "MPIABI"

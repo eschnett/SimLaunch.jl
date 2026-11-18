@@ -10,9 +10,9 @@ scratch = "~/.local/share/simlaunch/runs"
 bin = "julia"
 
 [mpi]
-default = "abi"                        # for a run that names no recipe
+default = "mpiabi"                     # for a run that names no recipe
 
-[mpi.abi]                              # MPIABI_jll: the standard MPI ABI, under its own mpiexec
+[mpi.mpiabi]                           # MPIABI_jll: the standard MPI ABI, under its own mpiexec
 binary = "MPIABI_jll"
 launcher = "mpiexec"
 

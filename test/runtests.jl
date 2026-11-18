@@ -140,8 +140,8 @@ end
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
           [mpi]
-          default = "abi"
-          [mpi.abi]
+          default = "mpiabi"
+          [mpi.mpiabi]
           binary = "MPIABI_jll"
           launcher = "mpiexec"
           """)
@@ -156,10 +156,10 @@ end
               [slurm]
               account = "def-user"
               [mpi]
-              default = "system"
-              [mpi.system]
+              default = "mpiabi"
+              [mpi.mpiabi]
               julia = "~/julia-$name/bin/julia"
-              [mpi.system.preferences]
+              [mpi.mpiabi.preferences]
               library_names = ["/home/user/openmpi-mpi-abi/lib64/libmpi_abi.so"]
               mpiexec = "/home/user/openmpi-mpi-abi/bin/mpiexec"
               """)
@@ -256,11 +256,11 @@ end
             mspec(extra) = "name = \"m\"\n[site.trillium]\ntime = \"1:00:00\"\n[site.local]\nthreads = 1\n[site.cluster]\ntime = \"0:10:00\"\n" *
                            "[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n" * extra
             r = only(job(mspec("ranks = 8\n"), trillium).runs)
-            @test r.mpi == "system" && r.envdir == "envs/default-mpi-system" && r.threads == 24
+            @test r.mpi == "mpiabi" && r.envdir == "envs/default-mpi-mpiabi" && r.threads == 24
             @test only(job(mspec(""), trillium).runs).mpi == ""                     # no ranks, no MPI
-            @test only(job(mspec("mpi = \"default\"\n"), trillium).runs).mpi == "system"
+            @test only(job(mspec("mpi = \"default\"\n"), trillium).runs).mpi == "mpiabi"
             @test only(job(mspec("ranks = 8\nmpi = \"jll\"\n"), trillium).runs).mpi == "jll"
-            @test only(job(mspec("ranks = 2\n"), loc).runs).mpi == "abi"
+            @test only(job(mspec("ranks = 2\n"), loc).runs).mpi == "mpiabi"
             @test load_site("cluster").mpi_default === nothing
             @test_throws "names no default" job(mspec("ranks = 2\n"), load_site("cluster"))
             @test_throws "names no default" job(mspec("mpi = \"default\"\n"), load_site("cluster"))
@@ -370,15 +370,15 @@ end
             @test profile("[mpi]\ndefault = \"a\"\n[mpi.a]\nbinary = \"MPIABI_jll\"\n").mpi_default == "a"
             @test_throws "`default` names one of the recipes" profile("[mpi]\ndefault = \"b\"\n[mpi.a]\nbinary = \"jll\"\n")
             @test_throws "`binary` is" profile("[mpi.a]\nbinary = \"mpich\"\n")
-            @test sym.mpi_default == "system" && sym.mpi["system"].preferences["abi"] == "MPIABI" && isempty(sym.mpi["hpcx"].preferences)
+            @test sym.mpi_default == "mpiabi" && sym.mpi["mpiabi"].preferences["abi"] == "MPIABI" && isempty(sym.mpi["hpcx"].preferences)
             @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
             odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
             @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"
             # profiles: the user's come before the package's, and one with a `base` holds only what differs
             tri = load_site("trillium")
-            @test tri.account == "def-user" && tri.code == "/home/user/studies" && tri.cores == 192 && tri.mpi_default == "system"
-            @test tri.mpi["system"].modules == ["StdEnv/2023"] && isempty(tri.mpi["system"].unset)
-            @test tri.mpi["system"].preferences["abi"] == "MPIABI" && startswith(tri.mpi["system"].preferences["mpiexec"], "/home/user/")
+            @test tri.account == "def-user" && tri.code == "/home/user/studies" && tri.cores == 192 && tri.mpi_default == "mpiabi"
+            @test tri.mpi["mpiabi"].modules == ["StdEnv/2023"] && isempty(tri.mpi["mpiabi"].unset)
+            @test tri.mpi["mpiabi"].preferences["abi"] == "MPIABI" && startswith(tri.mpi["mpiabi"].preferences["mpiexec"], "/home/user/")
             @test SimLaunch.read_profile("trillium")[2] == [joinpath(sites, "trillium.toml"), joinpath(pkgdir(SimLaunch), "sites", "trillium.toml")]
             @test issubset(["cluster", "fir", "kepler", "local", "nibi", "trillium", "trillium-gpu"], SimLaunch.known_sites())
             write(joinpath(sites, "mine.toml"), "base = \"trillium\"\n[slurm]\naccount = \"def-other\"\n")   # on top of the user's
@@ -392,7 +392,7 @@ end
             # the package's profile of a public cluster leaves the account and the directories to the user
             withenv("SIMLAUNCH_SITES" => mkpath(joinpath(root, "nosites"))) do
                 @test SimLaunch.known_sites() == ["fir", "local", "nibi", "trillium", "trillium-gpu"]
-                @test load_site("local").mpi_default == "abi"
+                @test load_site("local").mpi_default == "mpiabi"
                 why = try load_site("trillium"); "" catch err; err.msg end
                 @test occursin("leaves these to you: `paths.code`", why) && occursin("`slurm.account` (your Slurm account", why)
                 @test occursin(joinpath(root, "nosites", "trillium.toml"), why) && occursin("base = \"trillium\"", why)
@@ -401,11 +401,11 @@ end
                       "base = \"trillium\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n[slurm]\naccount = \"a\"\n")
                 bare = load_site("trillium")
                 @test bare.mpi_default == "jll" && isempty(bare.mpi["jll"].unset)
-                @test length(bare.mpi["system"].unset) == 3 && any(startswith("`mpi.system.julia`"), bare.mpi["system"].unset)
+                @test length(bare.mpi["mpiabi"].unset) == 3 && any(startswith("`mpi.mpiabi.julia`"), bare.mpi["mpiabi"].unset)
                 mpispec = "name = \"m\"\ntime = \"1:00:00\"\n[[run]]\nlabel = \"a\"\nranks = 8\ncmd = \"examples/hello.jl\"\n"
                 onbare(text) = resolve(TOML.parse(text), bare; study = "toy", project = "Toy")
                 @test onbare(mpispec).runs[1].mpi == "jll"
-                @test_throws "the MPI recipe system of trillium leaves these to you" onbare(mpispec * "mpi = \"system\"\n")
+                @test_throws "the MPI recipe mpiabi of trillium leaves these to you" onbare(mpispec * "mpi = \"mpiabi\"\n")
             end
             rm(joinpath(sites, "odd.toml"))
             # a site without a queue compiles where it runs
@@ -722,7 +722,7 @@ end
             label = "new-16r"
             cmd = "examples/hello.jl n=1"
             ranks = 16
-            mpi = "system"
+            mpi = "mpiabi"
             prefix = "perf stat -e cache-misses"
 
             [[run]]
@@ -771,10 +771,10 @@ end
                                              variants = ["default", "base"], kw...)
             j = job(nested, "kepler")
             @test j.queue.partition == "amdq" && j.nodes == 2 && j.tasks == 8         # two nodes: not amddebugq
-            @test [r.envdir for r in j.runs] == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
+            @test [r.envdir for r in j.runs] == ["envs/base-test+mpi-jll", "envs/default-test+mpi-mpiabi", "envs/default-test+mpi-jll"]
             @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
             # the marker of what is prepared names the CPU target of a site with several CPU types
-            @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"] .*
+            @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-mpiabi", "envs/default-test+mpi-jll"] .*
                                             "\t\t\tznver2"
             @test occursin("export JULIA_CPU_TARGET=znver2", generate(j))
             @test occursin("DEPOT=/home/user/studies/toy2/depot-amd ", generate(j))
@@ -861,17 +861,17 @@ end
             # the launcher's arguments are for runs with ranks
             @test_throws "`launcher_args` is for a run with `ranks`" job(replace(nested, "vars = { TOYVAR = \"x\" }" => "launcher_args = [\"-v\"]"), "kepler")
             # under an mpiexec a run's variables are set for the launcher and again for every rank
-            jm = job(replace(nested, "mpi = \"system\"" => "mpi = \"hpcx\"\nvars = { ROMIO_HINTS = \"/a b/hints\" }"), "kepler")
+            jm = job(replace(nested, "mpi = \"mpiabi\"" => "mpi = \"hpcx\"\nvars = { ROMIO_HINTS = \"/a b/hints\" }"), "kepler")
             cmd = SimLaunch.run_command(jm, jm.runs[2])
             @test startswith(cmd, "env ROMIO_HINTS='/a b/hints' ") && occursin(" -n 16 env ROMIO_HINTS='/a b/hints' bash -c ", cmd)
             @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "kepler")
             @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "kepler")
-            @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "kepler")
+            @test_throws "no MPI recipe" job(replace(nested, "\"mpiabi\"" => "\"cray\""), "kepler")
             # only the named runs are checked: another run may be written for a recipe this site does not have
-            jo = job(replace(nested, "\"system\"" => "\"cray\""), "kepler"; only_runs = ["serial"])
+            jo = job(replace(nested, "\"mpiabi\"" => "\"cray\""), "kepler"; only_runs = ["serial"])
             @test [r.label for r in jo.runs] == ["serial"]
             @test_throws "its runs: base-8r, new-16r, serial" job(nested, "kepler"; only_runs = ["none"])
-            @test_throws "one node only" job(replace(nested, "\"system\"" => "\"jll-fork\""), "kepler")
+            @test_throws "one node only" job(replace(nested, "\"mpiabi\"" => "\"jll-fork\""), "kepler")
             @test_throws "pin = true" job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\npin = true"), "kepler")
             @test_throws "for site kepler only" job(nested, "trillium")
             # a chain of jobs: a pre-emptible queue first, and never the queue that is not for chains

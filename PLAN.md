@@ -219,12 +219,12 @@ modules = []                           # a pure Julia job needs none
 # no [arch] table: one architecture, so the login node compiles for the compute nodes
 compute_internet = false               # prepare fetches everything; jobs run offline
 
-[mpi.system]                           # Open MPI 4.1.5 through mpi_abi_wrapper
+[mpi.mpiabi]                           # Open MPI 4.1.5 through mpi_abi_wrapper
 julia = "~/julia-1.13.4-trillium/bin/julia"   # setrpaths-patched: juliaup's cannot load it
 modules = ["StdEnv/2023"]
 launcher = "srun"
 launcher_args = ["--mpi=pmix"]
-[mpi.system.preferences]               # the keywords of MPIPreferences.use_system_binary
+[mpi.mpiabi.preferences]               # the keywords of MPIPreferences.use_system_binary
 library_names = ["/home/USER/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
 abi = "MPIABI"
 
@@ -264,7 +264,7 @@ found through MPI.jl), the modules and variables its runs need, a Julia that
 can load the site's MPI where juliaup's cannot, and whether its ranks can be
 spread over several nodes. Symmetry has three: `jll` (MPICH_jll under
 `srun --mpi=pmi2`), `jll-fork` (MPICH_jll's `mpiexec` with Hydra forking the
-ranks, for one node and for GPU jobs) and `system` (HPC-X).
+ranks, for one node and for GPU jobs) and `mpiabi` (HPC-X through mpi_abi_wrapper).
 
 **Architectures.** A site's nodes are not one CPU type, and a compiled cache
 is for one. A profile names its architectures in `[arch]`, each with its
@@ -638,18 +638,21 @@ which has the site's interconnect and, where the site's MPI has it, CUDA; on
 the laptop MPIABI_jll, since there is no site MPI to wrap. One ABI means one
 way MPI.jl is built on every site, and the wrapper costs nothing measurable
 (ping-pong on Trillium, Nibi and Fir: the same as Open MPI loaded directly).
-A recipe's `binary` is `"system"` with the keywords of
+The recipe is named `mpiabi` on every site, the laptop included, so that a
+spec's `mpi = "mpiabi"` means the same everywhere; until 2026-11-18 it was
+`system` on the clusters and `abi` on the laptop, which read as if a cluster
+did not use the ABI. A recipe's `binary` is `"system"` with the keywords of
 `MPIPreferences.use_system_binary` as its `preferences`, `"jll"` for
 MPICH_jll, or the name of another binary MPIPreferences knows.
 
 | Site | Default recipe | Wraps | Launcher | Other recipes |
 | --- | --- | --- | --- | --- |
-| `local` | `abi` | MPIABI_jll (MPICH 5) | its `mpiexec` | `jll` |
-| Symmetry | `system` | HPC-X's Open MPI 4.1.7, CUDA-aware | `mpiexec` | `hpcx` (the same MPI without the wrapper), `jll`, `jll-fork` |
-| Trillium | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
-| Trillium GPU | `system` | the same, built with CUDA | `mpiexec` | |
-| Nibi | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
-| Fir | `system` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+| `local` | `mpiabi` | MPIABI_jll (MPICH 5) | its `mpiexec` | `jll` |
+| Symmetry | `mpiabi` | HPC-X's Open MPI 4.1.7, CUDA-aware | `mpiexec` | `hpcx` (the same MPI without the wrapper), `jll`, `jll-fork` |
+| Trillium | `mpiabi` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+| Trillium GPU | `mpiabi` | the same, built with CUDA | `mpiexec` | |
+| Nibi | `mpiabi` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
+| Fir | `mpiabi` | Open MPI 4.1.5 of StdEnv/2023 | `srun --mpi=pmix` | `jll` |
 
 On the Alliance sites the recipe names a copy of Julia patched with
 `setrpaths.sh`, since juliaup's cannot load libraries of the site's software
@@ -691,9 +694,9 @@ H200s): a toy study, two ranks with one GPU each, exchanging a small and a
 | Run | MPI | Buffers handed to MPI | Result |
 |-----|-----|-----------------------|--------|
 | `fork-staged` | MPICH_jll, `jll-fork` | host copies | ok |
-| `hpcx-staged` | HPC-X, `system` | host copies | ok |
-| `hpcx-direct-nopool` | HPC-X, `system` | device, `JULIA_CUDA_MEMORY_POOL=none` | ok |
-| `hpcx-direct` | HPC-X, `system` | device, CUDA.jl's default pool | ok |
+| `hpcx-staged` | HPC-X, `mpiabi` | host copies | ok |
+| `hpcx-direct-nopool` | HPC-X, `mpiabi` | device, `JULIA_CUDA_MEMORY_POOL=none` | ok |
+| `hpcx-direct` | HPC-X, `mpiabi` | device, CUDA.jl's default pool | ok |
 
 A spec asks for it with `resources = { gpus = 2 }`, `env = "cuda"`, and
 `mpi` and `ranks = 2` in a run; a rank chooses its GPU itself
@@ -1400,9 +1403,9 @@ and for clusters that are down.
        its finished runs point at them;
      - a smoke run of every run of a spec on `local` before `submit`, which
        needs a convention for a tiny size;
-     - the same recipe names on every site (`jll`, `system`), with the
+     - the same recipe names on every site (`jll`, `mpiabi`), with the
        launcher for a GPU job chosen by the tool;
-     - MPI recipes for the GPU jobs of Nibi and Fir, whose `system` recipe
+     - MPI recipes for the GPU jobs of Nibi and Fir, whose `mpiabi` recipe
        starts its ranks with `srun`.
 
 **Open questions for Erik:**
