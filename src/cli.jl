@@ -47,6 +47,8 @@ const USAGE = """
           List the site profiles and the files they come from.
       simlaunch studies
           List the studies in the cache.
+      simlaunch version
+          The version of SimLaunch, and its commit when it runs from a git checkout.
 
     A spec is a TOML file, or a Julia file (.jl) whose last expression is the spec.
     Snapshots are kept in ~/.cache/simlaunch (or \$SIMLAUNCH_CACHE).
@@ -99,6 +101,18 @@ end
 function need(options, name)
     haskey(options, name) || fail("--$name is required")
     return options[name]
+end
+
+"""
+The version of SimLaunch, and the commit when it runs from a git checkout of
+its own, as a development copy does; an installed copy has no `.git`.
+"""
+function version_text()
+    text = "SimLaunch $VERSION_STRING"
+    top = git(PKGROOT, "rev-parse", "--show-toplevel")
+    top !== nothing && realpath(top) == realpath(PKGROOT) || return text
+    prov = provenance(PKGROOT)
+    return string(text, ", from the checkout $PKGROOT at ", prov.sha[1:10], prov.dirty ? ", with uncommitted changes" : "")
 end
 
 function command(args)
@@ -193,6 +207,9 @@ function command(args)
             found = read_profile(name)
             println(rpad(name, 16), join(found[2], ", on top of "))
         end
+    elseif cmd in ("version", "--version")
+        isempty(rest) || fail("usage: simlaunch version")
+        println(version_text())
     elseif cmd == "studies"
         isdir(cache_root()) && foreach(println, sort!(filter(d -> isfile(joinpath(cache_root(), d, "snapshot.toml")),
                                                              readdir(cache_root()))))

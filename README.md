@@ -35,7 +35,8 @@ julia -e 'using Pkg; Pkg.Apps.add("SimLaunch")'
 ```
 
 This puts `simlaunch` into `~/.julia/bin`, which must be on your `PATH`.
-`Pkg.Apps.update("SimLaunch")` takes a newer version.
+`Pkg.Apps.update("SimLaunch")` takes a newer version, and `simlaunch version`
+says which one runs; from a clone it also names the commit.
 
 To work on SimLaunch itself, install it from a clone with
 `Pkg.Apps.develop(path="/path/to/SimLaunch")`, or run it without installing

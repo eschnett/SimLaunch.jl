@@ -206,6 +206,16 @@ end
             @test_throws UserError parse_time("soon")
         end
 
+        @testset "version" begin
+            @test SimLaunch.VERSION_STRING == string(pkgversion(SimLaunch))         # from Project.toml, not a copy
+            text = SimLaunch.version_text()
+            @test startswith(text, "SimLaunch $(pkgversion(SimLaunch))")
+            # a git checkout of the package, as here and in CI, also names its commit
+            isdir(joinpath(pkgdir(SimLaunch), ".git")) &&
+                @test occursin(r"from the checkout .* at [0-9a-f]{10}", text)
+            @test_throws "usage: simlaunch version" SimLaunch.command(["version", "x"])
+        end
+
         @testset "snapshot" begin
             dest = snapshot(toy; study = "toy")
             @test isfile(joinpath(dest, "src", "Toy", "src", "Toy.jl"))

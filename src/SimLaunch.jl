@@ -8,7 +8,10 @@ using Dates
 using TOML
 
 const PKGROOT = dirname(@__DIR__)
-const VERSION_STRING = "0.1.0"
+const PROJECT_FILE = joinpath(PKGROOT, "Project.toml")
+include_dependency(PROJECT_FILE)
+"The package's version, read from its Project.toml, the one place it is written."
+const VERSION_STRING = string(TOML.parsefile(PROJECT_FILE)["version"])
 
 "An error the user can fix; printed without a stack trace."
 struct UserError <: Exception
