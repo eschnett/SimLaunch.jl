@@ -905,6 +905,57 @@ end
             @test SimLaunch.q("*.tmp") == "'*.tmp'" && SimLaunch.q("it's") == "'it'\\''s'" && SimLaunch.q("n=3") == "n=3"
         end
 
+        @testset "the bounds of a test environment" begin
+            # test/Project.toml's [compat] holds beside the project's, as under Pkg.test
+            d = mktempdir(root)
+            pkg = mkpath(joinpath(d, "Bounded"))
+            mkpath(joinpath(pkg, "src")); mkpath(joinpath(pkg, "test"))
+            write(joinpath(pkg, "src", "Bounded.jl"), "module Bounded end\n")
+            head = """
+                   name = "Bounded"
+                   uuid = "33333333-3333-4333-8333-333333333333"
+                   """
+            body = """
+                   [deps]
+                   Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+
+                   [compat]
+                   Dates = "1"
+                   julia = "1"
+                   """
+            write(joinpath(pkg, "Project.toml"), head * body)
+            write(joinpath(pkg, "test", "Project.toml"), """
+                  [deps]
+                  Bounded = "33333333-3333-4333-8333-333333333333"
+                  Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+                  Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+                  [sources]
+                  Bounded = {path = ".."}
+
+                  [compat]
+                  Dates = "1.6 - 1"
+                  Test = "1"
+                  """)
+            make_env(env) = withenv("JULIA_DEPOT_PATH" => joinpath(root, "depot") * ":", "JULIA_PKG_OFFLINE" => "true",
+                                     "JULIA_LOAD_PATH" => nothing, "JULIA_PROJECT" => nothing) do   # as a site runs it
+                err = IOBuffer()
+                ok = success(pipeline(`$(Base.julia_cmd()) --startup-file=no $(joinpath(pkgdir(SimLaunch), "templates", "make_env.jl")) $pkg $(joinpath(d, env)) --test`;
+                                      stdout = devnull, stderr = err))
+                (; ok, err = String(take!(err)))
+            end
+            @test make_env("env").ok
+            # where both name a package, the test project's bound is written, and the package brings its own
+            @test TOML.parsefile(joinpath(d, "env", "Project.toml"))["compat"] ==
+                  Dict("Dates" => "1.6 - 1", "Test" => "1", "julia" => "1")
+            # a project that is not a package cannot bring its own: two different bounds are refused
+            write(joinpath(pkg, "Project.toml"), body)
+            write(joinpath(pkg, "test", "Project.toml"), replace(read(joinpath(pkg, "test", "Project.toml"), String),
+                                                                 r"Bounded = .*\n" => ""))
+            r = make_env("other")
+            @test !r.ok && occursin("Dates has the bound \"1\"", r.err) && occursin("only one", r.err)
+        end
+
         @testset "a chain of jobs, its disk usage, fetch and clean" begin
             cluster = load_site("cluster")
             cscratch = study_scratch(cluster, "toy")

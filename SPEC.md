@@ -128,7 +128,7 @@ precompiles on the site.
   | --- | --- |
   | `cuda` | CUDA.jl, and its runtime, fetched during `prepare` |
   | `metal` | Metal.jl |
-  | `test` | the project's test dependencies: its `test/Project.toml`, or its `[extras]` and test target |
+  | `test` | the project's test dependencies: its `test/Project.toml` with its `[compat]` bounds, or its `[extras]` and test target |
   | `mpi` | MPI.jl, set to the run's recipe. Added by itself to a run with `mpi` |
 
 - `variant = "base"` uses another version of the project and its path

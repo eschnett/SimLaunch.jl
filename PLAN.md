@@ -419,6 +419,7 @@ flags.
    snapshot's packages by path and adds what the spec names: CUDA or Metal,
    MPI and MPIPreferences set to the site's binary, the package's test
    dependencies (its `test/Project.toml`, relative `[sources]` made absolute,
+   its `[compat]` bounds kept beside the package's as under `Pkg.test`,
    so a suite runs on a device), a script environment such as TreeWaveOLDG's
    `bin/Project.toml`, or single packages such as `OrdinaryDiffEqLowOrderRK`
    for a benchmark's comparison rows. The package's own `Project.toml` never
