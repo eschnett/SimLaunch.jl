@@ -26,33 +26,43 @@ function read_project(dir)
 end
 
 """
-The project and every package it takes by path, following the packages' own
-path sources; and the packages pinned to a URL.
+A path as `collect_packages` keeps it: the real path of a directory on this
+machine, and the plain normalized path of one that `files` maps to an
+exported commit, which the working tree need not have.
 """
-function collect_packages(project_dir)
+canonical(path, files) = files(path) == path ? realpath(path) : normpath(path)
+
+"""
+The project and every package it takes by path, following the packages' own
+path sources; and the packages pinned to a URL. `files` maps a package's
+directory to where its files are read: itself, or its copy exported from a
+commit.
+"""
+function collect_packages(project_dir; files = identity)
     packages = SourcePackage[]
     pins = Pin[]
     seen = Set{String}()
-    todo = [(get(read_project(project_dir), "name", basename(project_dir)), project_dir)]
+    todo = [(get(read_project(files(project_dir)), "name", basename(project_dir)), project_dir)]
     while !isempty(todo)
         name, dir = popfirst!(todo)
         dir in seen && continue
         push!(seen, dir)
         push!(packages, SourcePackage(name, dir))
-        for (dep, source) in get(read_project(dir), "sources", Dict{String,Any}())
+        for (dep, source) in get(read_project(files(dir)), "sources", Dict{String,Any}())
             if haskey(source, "path")
                 path = source["path"]
                 isabspath(path) &&
                     fail("$name takes $dep by the absolute path $path, which would still point at this machine on a site; use a relative path")
-                full = joinpath(dir, path)
-                isdir(full) || fail("$name takes $dep from $full, which does not exist")
-                push!(todo, (dep, realpath(full)))
+                full = normpath(joinpath(dir, path))
+                isdir(files(full)) ||
+                    fail("$name takes $dep from $full, which does not exist", files(full) == full ? "" : " in the commit")
+                push!(todo, (dep, canonical(full, files)))
             elseif haskey(source, "url")
                 push!(pins, Pin(dep, name, dir, get(source, "rev", nothing)))
             end
         end
     end
-    check_manifest_paths(project_dir, seen)
+    check_manifest_paths(project_dir, seen; files)
     return packages, pins
 end
 
@@ -60,15 +70,15 @@ end
 A package developed with `Pkg.develop` is named by path in the manifest only.
 Manifests are not copied, so a site could not find it: refuse.
 """
-function check_manifest_paths(project_dir, known)
-    for file in readdir(project_dir; join = true)
+function check_manifest_paths(project_dir, known; files = identity)
+    for file in readdir(files(project_dir); join = true)
         occursin(r"^Manifest(-v[\d.]+)?\.toml$", basename(file)) || continue
         manifest = TOML.parsefile(file)
         for (dep, entries) in get(manifest, "deps", Dict{String,Any}())
             for entry in entries
                 haskey(entry, "path") || continue
-                full = joinpath(project_dir, entry["path"])
-                isdir(full) && realpath(full) in known && continue
+                full = normpath(joinpath(project_dir, entry["path"]))
+                isdir(files(full)) && canonical(full, files) in known && continue
                 fail("$(basename(file)) takes $dep from the path $(entry["path"]), but Project.toml has no [sources] entry for it. ",
                      "Manifests are not copied to a site; add `$dep = {path = \"$(entry["path"])\"}` to [sources].")
             end
@@ -128,12 +138,45 @@ function warn_pins(pins)
 end
 
 """
-Copy a project and its path packages into `tmp/<prefix>/src`, keeping their
-relative positions. Returns the project's path there, the packages' records
-and the pins.
+A commit of the git repository that holds `project`, exported into `dir`:
+its tracked files, without submodules. Returns the commit's SHA and the map
+from a directory to where its files are read, which sends a directory of the
+repository to its exported copy and leaves any other as it is.
 """
-function copy_packages(project, tmp, prefix)
-    packages, pins = collect_packages(project)
+function export_commit(project, rev, dir)
+    top = git(project, "rev-parse", "--show-toplevel")
+    top === nothing && fail("--rev takes a commit of the project's git repository, and $project is not in one")
+    top = realpath(top)
+    sha = git(top, "rev-parse", "--verify", "--quiet", rev * "^{commit}")
+    sha === nothing && fail("the repository $top has no commit $(repr(rev))")
+    run(pipeline(`git -C $top archive --format=tar $sha`, `tar -x -C $dir`))
+    files(path) = path == top || startswith(path, top * "/") ? joinpath(dir, relpath(path, top)) : path
+    return sha, files
+end
+
+"""
+Copy a project and its path packages into `tmp/<prefix>/src`, keeping their
+relative positions. With `rev`, a commit and its SHA, the packages in the
+project's repository are copied as that commit holds them, and those outside
+it from their working trees. Returns the project's path there, the packages'
+records and the pins.
+"""
+function copy_packages(project, tmp, prefix; rev = nothing)
+    files = identity
+    exported = nothing
+    if rev !== nothing
+        exported = mktempdir()
+        sha, files = export_commit(project, rev, exported)
+    end
+    try
+        return copy_trees(project, tmp, prefix, files, rev === nothing ? nothing : (rev, sha))
+    finally
+        exported === nothing || rm(exported; recursive = true, force = true)
+    end
+end
+
+function copy_trees(project, tmp, prefix, files, commit)
+    packages, pins = collect_packages(project; files)
     warn_pins(pins)
     # a package inside another one is copied with it
     packages = [p for p in packages
@@ -146,11 +189,13 @@ function copy_packages(project, tmp, prefix)
         target = joinpath(tmp, dest)
         mkpath(target)
         excludes = ["--exclude=$e" for e in DEFAULT_EXCLUDES]
-        ignore = joinpath(p.path, ".simlaunchignore")
+        ignore = joinpath(files(p.path), ".simlaunchignore")
         isfile(ignore) && push!(excludes, "--exclude-from=$ignore")
-        run(`rsync -a $excludes $(p.path * "/") $(target * "/")`)
-        prov = provenance(p.path)
+        run(`rsync -a $excludes $(files(p.path) * "/") $(target * "/")`)
+        prov = files(p.path) == p.path ? provenance(p.path) :
+               (; git = true, branch = "", sha = commit[2], dirty = false, status = "", diff = "")
         record = Dict{String,Any}("name" => p.name, "path" => p.path, "dest" => dest, "git" => prov.git)
+        files(p.path) == p.path || (record["rev"] = commit[1])          # copied from a commit, not the working tree
         if prov.git
             record["branch"], record["sha"], record["dirty"] = prov.branch, prov.sha, prov.dirty
             if prov.dirty
@@ -166,14 +211,16 @@ function copy_packages(project, tmp, prefix)
 end
 
 """
-    snapshot(project; study, variants = [])
+    snapshot(project; study, rev = nothing, variants = [])
 
 Copy the project at `project` and its path packages into the cache as the
-study `study`. `variants` are pairs `name => directory`: further versions of
-the project, for comparisons inside one job. Returns the snapshot's
-directory.
+study `study`. With `rev`, a commit such as `"HEAD"` or a SHA, the project
+and the path packages in its git repository are copied as the commit holds
+them, not as the working tree does. `variants` are pairs `name => directory`:
+further versions of the project, for comparisons inside one job. Returns the
+snapshot's directory.
 """
-function snapshot(project::AbstractString; study::AbstractString, variants = Pair{String,String}[])
+function snapshot(project::AbstractString; study::AbstractString, rev = nothing, variants = Pair{String,String}[])
     checkname("a study name", study)
     project = abspath(expanduser(project))
     isdir(project) || fail("no such directory: $project")
@@ -191,7 +238,7 @@ function snapshot(project::AbstractString; study::AbstractString, variants = Pai
     rm(tmp; recursive = true, force = true)
     mkpath(joinpath(tmp, "provenance"))
     try
-        rel, records, pins = copy_packages(project, tmp, "")
+        rel, records, pins = copy_packages(project, tmp, ""; rev)
         variant_records = Dict{String,Any}[]
         for (name, dir) in variants
             vrel, vrecords, _ = copy_packages(realpath(abspath(expanduser(dir))), tmp, joinpath("variants", name))

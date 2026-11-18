@@ -46,6 +46,8 @@ as `julia --project=/path/to/SimLaunch -m SimLaunch <command>`.
 ```bash
 # the snapshot: the project and every package it takes by path
 simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1
+# or a commit, not the working tree, as for a commit's test suite
+simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1-a1b2c3d --rev a1b2c3d
 
 # copy to the site, instantiate and precompile there
 simlaunch prepare s1 --site trillium --spec jobs/s1-sweep.toml

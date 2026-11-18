@@ -382,11 +382,22 @@ writes the second version to `variants/base/src/`, with its own entry in
 environments and its own precompiled image, so the versions differ only in
 the package.
 
+**A commit.** `simlaunch snapshot . --study s-a1b2c3d --rev a1b2c3d` copies
+the project as a commit holds it, for a suite whose result is that commit's
+status. The commit's tracked files are exported with `git archive` into a
+temporary directory, so the working tree, its uncommitted changes and its
+untracked files do not matter, and nothing in the repository changes. Path
+packages in the same repository come from the commit too, also one the working
+tree no longer has; a path package in another repository comes from its
+working tree, as without `--rev`. Submodules are not exported. Until
+2026-11-18 a commit needed a temporary `git worktree` of its own.
+
 **Provenance.** `snapshot.toml` records, per package, the local path, the git
 branch and SHA, and whether the tree was dirty; a dirty tree also gets its
-`git diff` saved beside it. A result can then always be traced to the exact
-code that made it, including uncommitted changes, which is the normal state
-while a study is being developed.
+`git diff` saved beside it. A package copied from a commit records the SHA
+and the `rev` it was given instead. A result can then always be traced to the
+exact code that made it, including uncommitted changes, which is the normal
+state while a study is being developed.
 
 **What is excluded.** `.git`, every `Manifest.toml`, editor backups, `out/`,
 checkpoints and anything listed in a `.simlaunchignore` file.

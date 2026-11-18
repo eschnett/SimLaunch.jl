@@ -7,8 +7,9 @@ const USAGE = """
     simlaunch: run Julia projects locally and on clusters
 
     Usage:
-      simlaunch snapshot <project> --study <study> [--variant <name>=<directory>]...
+      simlaunch snapshot <project> --study <study> [--rev <commit>] [--variant <name>=<directory>]...
           Copy the project and the packages it takes by path, as the study <study>.
+          --rev copies them as a commit of the project's repository holds them, not the working tree.
           A variant is another version of the project, for comparisons in one job.
       simlaunch prepare <study> --site <site> [--spec <spec.toml>]...
           Copy the study to the site, instantiate and precompile it there.
@@ -106,18 +107,19 @@ function command(args)
     if cmd in ("help", "--help", "-h")
         print(USAGE)
     elseif cmd == "snapshot"
-        pos, opt = parse_args(rest, ["study", "variant"]; multi = ["variant"])
-        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study> [--variant <name>=<directory>]...")
+        pos, opt = parse_args(rest, ["study", "rev", "variant"]; multi = ["variant"])
+        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study> [--rev <commit>] [--variant <name>=<directory>]...")
         variants = map(get(opt, "variant", String[])) do v
             occursin('=', v) || fail("--variant takes <name>=<directory>: $(repr(v))")
             name, dir = split(v, '='; limit = 2)
             String(name) => String(dir)
         end
-        dest = snapshot(pos[1]; study = need(opt, "study"), variants)
+        dest = snapshot(pos[1]; study = need(opt, "study"), rev = get(opt, "rev", nothing), variants)
         snap = load_snapshot(opt["study"])
         println("study $(opt["study"]): $(length(snap["package"])) packages in $dest")
         for p in snap["package"]
             state = !p["git"] ? "not in git" :
+                    haskey(p, "rev") ? string(p["sha"][1:10], ", the commit ", p["rev"]) :
                     string(p["sha"][1:10], " ", p["branch"], p["dirty"] ? ", with uncommitted changes" : "")
             println("  $(rpad(p["name"], 28)) $state")
         end

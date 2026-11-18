@@ -223,6 +223,51 @@ end
 
         @testset "specs" begin
             trillium, loc = load_site("trillium"), load_site("local")
+        @testset "snapshot of a commit" begin
+            # the commit, not the working tree: not its uncommitted change, nor an untracked file
+            write(joinpath(toy, "untracked.jl"), "")
+            dest = snapshot(toy; study = "toy-rev", rev = "HEAD")
+            rm(joinpath(toy, "untracked.jl"))
+            @test !occursin("an uncommitted change", read(joinpath(dest, "src", "Toy", "src", "Toy.jl"), String))
+            @test !ispath(joinpath(dest, "src", "Toy", "untracked.jl"))
+            @test !ispath(joinpath(dest, "src", "Toy", "Manifest.toml")) && !ispath(joinpath(dest, "src", "Toy", "backup.jl~"))
+            @test isfile(joinpath(dest, "src", "ToyDep", "src", "ToyDep.jl"))    # outside the repository: its working tree
+            pkgs = Dict(p["name"] => p for p in load_snapshot("toy-rev")["package"])
+            @test pkgs["Toy"]["sha"] == readchomp(`git -C $toy rev-parse HEAD`) && pkgs["Toy"]["rev"] == "HEAD"
+            @test !pkgs["Toy"]["dirty"] && !haskey(pkgs["Toy"], "diff") && pkgs["Toy"]["path"] == realpath(toy)
+            @test !haskey(pkgs["ToyDep"], "rev")
+            @test_throws "has no commit" snapshot(toy; study = "toy-rev2", rev = "nope")
+            @test_throws "is not in one" snapshot(joinpath(dirname(toy), "ToyDep"); study = "toy-rev2", rev = "HEAD")
+            @test !ispath(joinpath(ENV["SIMLAUNCH_CACHE"], "toy-rev2"))
+            # a path package of the repository that the working tree no longer has is copied from the commit
+            repo = mkpath(joinpath(root, "repo"))
+            outer, inner = mkpath(joinpath(repo, "Outer", "src")), mkpath(joinpath(repo, "Outer", "lib", "Inner", "src"))
+            write(joinpath(repo, "Outer", "Project.toml"), """
+                  name = "Outer"
+                  uuid = "44444444-4444-4444-8444-444444444444"
+                  [deps]
+                  Inner = "55555555-5555-4555-8555-555555555555"
+                  [sources]
+                  Inner = {path = "lib/Inner"}
+                  """)
+            write(joinpath(outer, "Outer.jl"), "module Outer end\n")
+            write(joinpath(dirname(inner), "Project.toml"), "name = \"Inner\"\nuuid = \"55555555-5555-4555-8555-555555555555\"\n")
+            write(joinpath(inner, "Inner.jl"), "module Inner end\n")
+            run(`git -C $repo init -q`); run(`git -C $repo add -A`)
+            run(`git -C $repo -c user.name=test -c user.email=test@example.org commit -q -m init`)
+            rm(joinpath(repo, "Outer", "lib"); recursive = true)
+            @test_throws "does not exist" snapshot(joinpath(repo, "Outer"); study = "outer")
+            out = mktemp() do path, io
+                redirect_stdout(io) do
+                    @test SimLaunch.command(["snapshot", joinpath(repo, "Outer"), "--study", "outer", "--rev", "HEAD"]) == 0
+                end
+                close(io); read(path, String)
+            end
+            dest = joinpath(ENV["SIMLAUNCH_CACHE"], "outer")
+            @test isfile(joinpath(dest, "src", "Outer", "lib", "Inner", "src", "Inner.jl"))
+            @test occursin(r"Outer\s+[0-9a-f]{10}, the commit HEAD", out)
+        end
+
             job(text, site; kw...) = resolve(load_spec(spec(text)), site; study = "toy", project = "Toy", kw...)
             j = job(spec_text(RUNS), trillium)
             @test j.mode === :parallel && j.time == 10800 && j.queue.partition == "compute"
