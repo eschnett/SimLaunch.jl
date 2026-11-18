@@ -61,7 +61,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 | `Pkg.add("CUDA")` into a scratch environment | `env = "cuda"`, or `"test+cuda"` |
 | `MPIPreferences.use_jll_binary()` / `use_system_binary()`, `module load` of an MPI | nothing for the site's own MPI: it is the default recipe of a run with `ranks`. `mpi = "<recipe>"` for another one of the site's profile |
 | `srun --mpi=pmi2 --ntasks=R …`, `mpiexec -n R …` | `ranks = R` and the recipe's launcher |
-| A rank script with `numactl --cpunodebind=$d --membind=$d`, one domain a rank or several | `placement = "numa"` |
+| A rank script with `numactl --cpunodebind=$d --membind=$d`, one domain a rank or several | `placement = "numa"`: a rank gets its share of the domains. `domains_per_rank = 1` for one domain a rank at any number of ranks |
 | `JULIA_EXCLUSIVE=1` with `srun --cpu-bind=none` | `pin = true` |
 | `-t N`, `OPENBLAS_NUM_THREADS` | `threads`, `blas_threads` |
 | A loop over thread counts | `threads = [1, 8, 64]` in one run |

@@ -134,7 +134,7 @@ function check_restart(study::AbstractString, spec::AbstractString; site::Abstra
     # 4. the project's own comparison, in a job
     dirs(job, r) = split(readsite(s, "ls -d $(q(rundir(job, r)))/[0-9][0-9][0-9]-*"), '\n'; keepempty = false)
     compare = with_runs(base, [relabel(r, "$(r.label)-compare-$k"; cmd = [rs.compare; dirs(whole, w); dirs(cut, c)],
-                                       ranks = 0, nodes = 1, placement = "", prefix = String[], launcher_args = String[])
+                                       ranks = 0, nodes = 1, placement = "", domains = 0, prefix = String[], launcher_args = String[])
                                for (r, w, c) in zip(base.runs, whole.runs, cut.runs)];
                         checkpoints = false, restart = nothing, after = "", tasks = 1, nodes = 1)
     idc = submit_job(compare, spec; io = devnull)

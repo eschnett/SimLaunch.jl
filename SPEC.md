@@ -80,13 +80,15 @@ In `[site.<name>]`, or at the top level as a default.
 | `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn099"]` |
 | `mpi` | the site's default, for a run with `ranks` | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
 | `placement` | none | `"numa"` |
+| `domains_per_rank` | a rank's share | The NUMA domains a rank is bound to, for the runs with `placement = "numa"`: see [MPI and placement](#mpi-and-placement) |
 | `prefix` | none | Words before the Julia command: `"perf stat -e cache-misses"`, split as a shell would, or a list of words. Each word reaches the command as it is: a `$VAR` in it is not expanded |
 | `launcher_args` | `[]` | Further arguments of the MPI launcher (`srun` or `mpiexec`), after the recipe's own, for the runs with `ranks`. They belong to one MPI, so to one site: write them in `[site.<name>]` |
 
 The default of `threads` is the allocation's cores for sequential runs, the
 cores divided by the number of runs for parallel ones, the cores divided by
 the ranks on a node for a run with ranks, and one NUMA domain's cores for
-a run without ranks that has `placement = "numa"`.
+a run without ranks that has `placement = "numa"`. With `domains_per_rank`
+it is the cores of that many domains, and more threads are refused.
 
 A partition can mix node types. A benchmark names its node with `node`, or
 keeps off the nodes that differ with `sbatch_args = ["--exclude=cn099"]` or
@@ -103,7 +105,7 @@ in [`SITES.md`](SITES.md)). Which CPU a run got is in its `simlaunch-job.toml`.
 | `threads` | the job's | A number, or a list: one run per count, labelled `<label>-t<N>` |
 | `julia_args` | the job's | Replaces the job's |
 | `vars` | the job's | Added to the job's |
-| `env`, `mpi`, `placement`, `prefix`, `launcher_args` | the job's | As above, for this run. `launcher_args` needs `ranks` |
+| `env`, `mpi`, `placement`, `domains_per_rank`, `prefix`, `launcher_args` | the job's | As above, for this run. `launcher_args` needs `ranks`, and `domains_per_rank` a placement |
 | `variant` | `"default"` | Which version of the study's packages: see [Environments](#environments) |
 | `ranks` | none | MPI ranks; the run is then started by its recipe's launcher |
 | `nodes` | the job's nodes with `ranks`, else 1 | The nodes the run's ranks are spread over |
@@ -167,6 +169,15 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
   A run without ranks gets domain 0. D is counted on the node when the run
   starts, and a node whose domains the ranks cannot share evenly ends the
   run at once; the profile's count is what `submit` checks.
+- `domains_per_rank = k` binds a rank to k domains instead of its share,
+  from the start of its share on: rank i gets the domains from ⌊i·D/R⌋. With
+  2 ranks on 8 domains and `domains_per_rank = 1`, rank 0 has domain 0 and
+  rank 1 domain 4. This keeps a rank the same while the number of ranks
+  changes, as a scaling benchmark wants. R need not divide D then: R·k ≤ D
+  is enough, and 4 ranks on 6 domains get domains 0, 1, 3 and 4. A run
+  without ranks gets k domains from 0 on. At the top level or in a site
+  table the key is for the runs that have a placement; a run that names it
+  itself needs one. A node with fewer than R·k domains ends the run at once.
 - A run's `vars` reach every rank on every node, under either launcher:
   `srun` passes the job's environment on, and for an `mpiexec` the
   variables are set again in front of each rank's command. Settings of

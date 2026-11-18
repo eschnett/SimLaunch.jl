@@ -117,19 +117,24 @@ function run_command(job::Job, r::Run)
     end
     if r.placement == "numa"
         # rank i of the R on its node gets the D/R NUMA domains from i·D/R on: their cores and their memory.
-        # A run without ranks gets domain 0. D is counted on the node (`numactl -H` starts with
+        # With `domains_per_rank = k` it gets k, from ⌊i·D/R⌋ on. A run without ranks gets domain 0, or k from 0 on. D is counted on the node (`numactl -H` starts with
         # "available: 8 nodes (0-7)"): a partition can mix node types, and the profile's number is only what
         # `submit` checks against
         rpn = max(r.ranks, 1) ÷ r.nodes
         # which rank on its node this is: srun says so; under an mpiexec the batch step's SLURM_LOCALID (0) is
         # inherited and says nothing, and Open MPI or Hydra do
         id = srun && r.ranks > 0 ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
-        width = r.ranks > 0 ? "\$(( n / $rpn ))" : "1"
-        bind = "l=$id; n=; read -r _ n _ < <(numactl -H 2>/dev/null); " *
-               "if [ \"\${n:-0}\" -lt $rpn ] || [ \$(( n % $rpn )) != 0 ]; then " *
-               "echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, " *
-               "which $rpn rank$(rpn == 1 ? "" : "s") cannot share evenly\" >&2; exit 1; fi; " *
-               "w=$width; d=\$(( l * w )); if [ \$w -gt 1 ]; then d=\$d-\$(( d + w - 1 )); fi; " *
+        width = r.domains > 0 ? string(r.domains) : r.ranks > 0 ? "\$(( n / $rpn ))" : "1"
+        misfit = r.domains > 0 ?
+                 "if [ \"\${n:-0}\" -lt $(rpn * r.domains) ]; then " *
+                 "echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, too few for " *
+                 "$rpn rank$(rpn == 1 ? "" : "s") with $(r.domains) each\" >&2; exit 1; fi; " :
+                 "if [ \"\${n:-0}\" -lt $rpn ] || [ \$(( n % $rpn )) != 0 ]; then " *
+                 "echo \"placement: \$(hostname -s) has \${n:-no} NUMA domains, " *
+                 "which $rpn rank$(rpn == 1 ? "" : "s") cannot share evenly\" >&2; exit 1; fi; "
+        first = r.domains > 0 ? "\$(( l * n / $rpn ))" : "\$(( l * w ))"
+        bind = "l=$id; n=; read -r _ n _ < <(numactl -H 2>/dev/null); " * misfit *
+               "w=$width; d=$first; if [ \$w -gt 1 ]; then d=\$d-\$(( d + w - 1 )); fi; " *
                "exec numactl --cpunodebind=\$d --membind=\$d \"\$@\""
         push!(words, "bash", "-c", q(bind), "numa")
     end

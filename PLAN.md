@@ -599,7 +599,12 @@ the R on its node to the D/R NUMA domains from i·D/R on, with
 `numactl --cpunodebind --membind`; a run without ranks gets domain 0.
 Until 2026-11-18 a rank had one domain whatever R was, so 2 ranks used 2
 of 8 domains; TreeIOHDF5's checkpoint benchmark, with 1, 2 and 4 ranks a
-node, left those runs unbound instead. R must divide D. D is counted on
+node, left those runs unbound instead. R must divide D. TreeAMR's scaling
+benchmark wants the opposite, one domain a rank at 1, 2, 4 and 8 ranks, so
+that only the number of ranks changes: `domains_per_rank = k` binds a rank
+to k domains from ⌊i·D/R⌋ on, needs only R·k ≤ D, and is checked again on
+the node. Named at the job's level it is for the runs that have a
+placement, since a spec also holds runs that bind themselves. D is counted on
 the node when the run starts (`numactl -H`), and a node whose domains the
 ranks cannot share evenly ends the run at once. The profile's count (8 on Symmetry's EPYC 7543
 nodes and on Trillium, 6 on Nibi) is what `submit` checks and what the

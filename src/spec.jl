@@ -13,6 +13,7 @@ struct Run
     ranks::Int                        # MPI ranks; 0: started without a launcher
     nodes::Int
     placement::String                 # "" or "numa"
+    domains::Int                      # NUMA domains a placed rank is bound to; 0: its share of the node's
     mpi::String                       # a recipe of the site's profile, or ""
     prefix::Vector{String}            # words put before the Julia command, each quoted
     launcher_args::Vector{String}     # further arguments of the MPI launcher, after the recipe's
@@ -56,10 +57,10 @@ end
 # Keys that may depend on the site: read from [site.<name>], with the top
 # level as the default.
 const SITE_KEYS = ["time", "resources", "mode", "threads", "pin", "env", "blas_threads",
-                   "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "prefix", "launcher_args"]
+                   "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "domains_per_rank", "prefix", "launcher_args"]
 const TOP_KEYS = ["name", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
 const RUN_KEYS = ["label", "cmd", "threads", "julia_args", "vars", "variant", "env", "ranks", "nodes",
-                  "placement", "mpi", "prefix", "launcher_args"]
+                  "placement", "domains_per_rank", "mpi", "prefix", "launcher_args"]
 const RESTART_KEYS = ["from", "to", "walltime", "margin", "continue_code", "temporary", "compare"]
 
 """
@@ -356,9 +357,22 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
             rpn = max(ranks, 1) ÷ run_nodes
             rpn <= site.numa ||
                 fail("$where: $rpn ranks on a node do not fit its $(site.numa) NUMA domains, at least one domain a rank")
-            site.numa % rpn == 0 ||
-                fail("$where: $rpn ranks on a node cannot share its $(site.numa) NUMA domains evenly; ",
-                     "`placement = \"numa\"` gives every rank the same number of domains")
+            # the job's `domains_per_rank` is for its runs that are placed; a run's own needs a placement
+            domains = get(r, "domains_per_rank", setting("domains_per_rank", 0))
+            if haskey(r, "domains_per_rank") || domains != 0
+                domains isa Integer && domains >= 1 || fail("$where: `domains_per_rank` must be a positive integer")
+                rpn * domains <= site.numa ||
+                    fail("$where: $rpn rank$(rpn == 1 ? "" : "s") on a node with $domains NUMA domains each ",
+                         "do not fit its $(site.numa) domains")
+            else
+                site.numa % rpn == 0 ||
+                    fail("$where: $rpn ranks on a node cannot share its $(site.numa) NUMA domains evenly; ",
+                         "`placement = \"numa\"` gives every rank the same number of domains. ",
+                         "`domains_per_rank` names a smaller number")
+            end
+        else
+            haskey(r, "domains_per_rank") && fail("$where: `domains_per_rank` is for a run with `placement = \"numa\"`")
+            domains = 0
         end
         # the launcher's own arguments: the job's are for its runs with ranks, a run's own need ranks
         haskey(r, "launcher_args") && ranks == 0 && fail("$where: `launcher_args` is for a run with `ranks`")
@@ -370,8 +384,11 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
 
         # threads: per rank
         rpn = max(ranks, 1) ÷ run_nodes
-        # a rank has its share of the node, and so of its NUMA domains; a placed run without ranks has one domain
-        share = placement == "numa" && ranks == 0 ? max(1, cores ÷ site.numa) : max(1, cores ÷ rpn)
+        # a rank has its share of the node, and so of its NUMA domains; a placed run has the cores of the
+        # domains it is bound to: those it names, or else its share, or one domain without ranks
+        share = placement != "numa" ? max(1, cores ÷ rpn) :
+                domains > 0 ? max(1, domains * (cores ÷ site.numa)) :
+                ranks == 0 ? max(1, cores ÷ site.numa) : max(1, cores ÷ rpn)
         default_threads = get(table, "threads", get(spec, "threads",
                               ranks > 0 || placement == "numa" ? share : mode === :parallel ? max(1, cores ÷ nruns) : cores))
         threads = get(r, "threads", default_threads)
@@ -380,8 +397,11 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
             t isa Integer && t >= 1 || fail("$where: `threads` must be a positive integer or a list of them")
             rpn * t <= cores ||
                 fail("$file: run $label asks for $(rpn == 1 ? "" : "$rpn ranks of ")$t threads, but $what $cores cores")
+            domains > 0 && t > share &&
+                fail("$file: run $label asks for $t threads, but the $domains NUMA domain$(domains == 1 ? "" : "s") ",
+                     "it is bound to $(domains == 1 ? "has" : "have") $share cores")
             push!(runs, Run(scan ? "$label-t$t" : label, words, t, args, vars, variant, env,
-                            env_dir(project, env, own; variant, recipe), ranks, run_nodes, placement, recipe,
+                            env_dir(project, env, own; variant, recipe), ranks, run_nodes, placement, domains, recipe,
                             prefix, launcher_args))
         end
     end

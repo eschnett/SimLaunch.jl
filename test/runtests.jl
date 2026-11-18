@@ -817,6 +817,39 @@ end
             bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(j, j.runs[3]))[1]
             @test placed("0") == (0, "--cpunodebind=0 --membind=0 the run\n")
             @test_throws "evenly" job(replace(nested, "ranks = 8" => "ranks = 3"), "kepler")
+            # `domains_per_rank`: a rank keeps to that many domains, from the start of its share on
+            jd = job(replace(nested, "ranks = 8" => "ranks = 2\ndomains_per_rank = 1"), "kepler")
+            @test jd.runs[1].domains == 1 && jd.runs[1].threads == 8 && jd.runs[2].domains == 0 && jd.runs[2].threads == 8
+            bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(jd, jd.runs[1]))[1]
+            @test placed("0") == (0, "--cpunodebind=0 --membind=0 the run\n")
+            @test placed("1") == (0, "--cpunodebind=4 --membind=4 the run\n")
+            numactl(4)                                                                # counted on the node
+            @test placed("1") == (0, "--cpunodebind=2 --membind=2 the run\n")
+            numactl(1)
+            code, said = placed("1")
+            @test code == 1 && occursin("has 1 NUMA domains, too few for 2 ranks with 1 each", said)
+            numactl(8)
+            jd = job(replace(nested, "ranks = 8" => "ranks = 2\ndomains_per_rank = 2"), "kepler")
+            @test jd.runs[1].threads == 16
+            bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(jd, jd.runs[1]))[1]
+            @test placed("1") == (0, "--cpunodebind=4-5 --membind=4-5 the run\n")
+            # with it the ranks need not divide the domains: 3 ranks on 8 start at 0, 2 and 5
+            jd = job(replace(nested, "ranks = 8" => "ranks = 3\ndomains_per_rank = 2"), "kepler")
+            bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(jd, jd.runs[1]))[1]
+            @test [placed(l)[2] for l in ("0", "1", "2")] == ["--cpunodebind=$d --membind=$d the run\n" for d in ("0-1", "2-3", "5-6")]
+            @test_throws "3 ranks on a node with 3 NUMA domains each do not fit its 8 domains" job(replace(nested, "ranks = 8" => "ranks = 3\ndomains_per_rank = 3"), "kepler")
+            @test_throws "the 1 NUMA domain it is bound to has 8 cores" job(replace(nested, "ranks = 8" => "ranks = 2\ndomains_per_rank = 1\nthreads = 9"), "kepler")
+            @test_throws "positive integer" job(replace(nested, "ranks = 8" => "ranks = 2\ndomains_per_rank = 0"), "kepler")
+            # a run without ranks: that many domains from 0 on
+            jd = job(replace(nested, "vars = { TOYVAR = \"x\" }" => "domains_per_rank = 2"), "kepler")
+            @test jd.runs[3].threads == 16
+            bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(jd, jd.runs[3]))[1]
+            @test placed("0") == (0, "--cpunodebind=0-1 --membind=0-1 the run\n")
+            # the job's is for its runs that are placed; a run's own needs a placement
+            jd = job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\ndomains_per_rank = 1",
+                             "vars = { TOYVAR = \"x\" }" => "placement = \"\""), "kepler")
+            @test [r.domains for r in jd.runs] == [1, 1, 0] && jd.runs[3].threads == 64
+            @test_throws "`domains_per_rank` is for a run with `placement" job(replace(nested, "vars = { TOYVAR = \"x\" }" => "placement = \"\"\ndomains_per_rank = 1"), "kepler")
             # a prefix is words, each quoted: as a string split as a shell would, or as a list
             @test occursin(" numa perf stat -e cache-misses \"\$JULIA\" ", SimLaunch.run_command(j, j.runs[2]))
             jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = \"env 'A=b c' X=\$HOME\""), "kepler")

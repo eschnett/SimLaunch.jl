@@ -160,6 +160,7 @@ a spec. Further fields, in short:
 | `mpi = "jll"` | another MPI recipe of the site's profile |
 | `nodes = 2` | in `resources`: the job's nodes; in a run: the nodes its ranks are spread over |
 | `placement = "numa"` | each rank on its share of the node's NUMA domains, with `numactl` |
+| `domains_per_rank = 1` | each rank on that many domains instead of its share |
 | `pin = true` | `JULIA_EXCLUSIVE=1` under `srun --cpu-bind=none`; not with `ranks` or `placement` |
 | `node = "cn095"` | a named node |
 | `sbatch_args`, `prefix`, `launcher_args` | lines for the batch header, words before the Julia command, and arguments of the MPI launcher |
