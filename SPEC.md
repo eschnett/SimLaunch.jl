@@ -10,6 +10,7 @@ to a spec, and [`PLAN.md`](PLAN.md) the reasons.
 - [What a job needs](#what-a-job-needs)
 - [Runs](#runs)
 - [Environments](#environments)
+  - [Julia versions](#julia-versions)
 - [MPI and placement](#mpi-and-placement)
 - [Restarts](#restarts)
 - [After the runs](#after-the-runs)
@@ -73,6 +74,7 @@ In `[site.<name>]`, or at the top level as a default.
 | `pin` | `false` | `JULIA_EXCLUSIVE=1`, `srun --cpu-bind=none` and `-t N,0`. Sequential CPU jobs on a cluster only; not for a run with `ranks` or `placement` |
 | `env` | `"default"` | The runs' environment: see [Environments](#environments) |
 | `blas_threads` | `1` | `OPENBLAS_NUM_THREADS` |
+| `julia` | the site's Julia | A Julia version or juliaup channel, such as `"1.13"`, `"1.14"` or `"beta"`: see [Julia versions](#julia-versions) |
 | `julia_args` | `[]` | Julia options, such as `["--check-bounds=yes"]`. Each set is precompiled by `prepare` |
 | `vars` | `{}` | Environment variables for the runs |
 | `queue` | chosen by rule | A partition of the site. Without it, the first in the profile's order that fits |
@@ -105,7 +107,7 @@ in [`SITES.md`](SITES.md)). Which CPU a run got is in its `simlaunch-job.toml`.
 | `threads` | the job's | A number, or a list: one run per count, labelled `<label>-t<N>` |
 | `julia_args` | the job's | Replaces the job's |
 | `vars` | the job's | Added to the job's |
-| `env`, `mpi`, `placement`, `domains_per_rank`, `prefix`, `launcher_args` | the job's | As above, for this run. `launcher_args` needs `ranks`, and `domains_per_rank` a placement |
+| `julia`, `env`, `mpi`, `placement`, `domains_per_rank`, `prefix`, `launcher_args` | the job's | As above, for this run. `launcher_args` needs `ranks`, and `domains_per_rank` a placement |
 | `variant` | `"default"` | Which version of the study's packages: see [Environments](#environments) |
 | `ranks` | none | MPI ranks; the run is then started by its recipe's launcher |
 | `nodes` | the job's nodes with `ranks`, else 1 | The nodes the run's ranks are spread over |
@@ -136,7 +138,37 @@ precompiles on the site.
   run's script is still the study's own; only the packages differ.
 
 Each site resolves its own package versions. `prepare` must be given every
-spec whose environments and Julia options a later `submit` uses.
+spec whose environments, Julia versions and Julia options a later `submit`
+uses.
+
+### Julia versions
+
+`julia = "1.13"` runs a run with another Julia than the site's own, such as
+a suite at the floor of the project's `[compat]` and at the release:
+
+```toml
+[[run]]
+label = "release"
+cmd = "test/runtests.jl"
+env = "test"
+
+[[run]]
+label = "floor"
+cmd = "test/runtests.jl"
+env = "test"
+julia = "1.13"
+```
+
+The value is a Julia version or a juliaup channel, with or without the `+`:
+`"1.14"`, `"1.14.0-beta1"`, `"beta"`. A site runs it with the binary its
+profile names for it in `[julia.versions]`, or else as juliaup's channel,
+`<bin> +1.13` ([`SITES.md`](SITES.md)). `prepare` stops when the site has
+neither; `juliaup add 1.13` there adds the channel. A run with a Julia
+version gets an environment of its own, `envs/<variant>-julia1.13/` (with its
+kinds, `envs/default-test-julia1.13/`), since a manifest is written for one
+Julia, and its caches are compiled for that Julia. `julia = ""` in a run is
+the site's own Julia again. An MPI recipe that names its own Julia (a
+patched copy on the Alliance sites) cannot be combined with `julia`.
 
 ## MPI and placement
 
@@ -301,5 +333,4 @@ runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi =
   options the spec uses;
 - a job of a spec with checkpoints is queued or running already.
 
-Not implemented, and refused by name: a run's `julia`, for another Julia
-version. Memory is not checked.
+Memory is not checked.

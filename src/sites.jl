@@ -63,6 +63,7 @@ struct Site
     mpi::Dict{String,MPIRecipe}
     mpi_default::Union{String,Nothing} # the recipe of a run that names none
     julia_bin::String
+    julia_versions::Dict{String,String} # a run's Julia version => its binary, for one that is not juliaup's channel
     depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
     archs::Dict{String,String}        # architectures: name => JULIA_CPU_TARGET; "": the node's own CPU
@@ -248,6 +249,7 @@ function load_site(name::AbstractString)
                 cores, numa, whole, header, queues, gpu,
                 read_recipes(get(conf, "mpi", Dict{String,Any}()), file)...,
                 get(julia, "bin", "julia"),
+                julia_versions(get(julia, "versions", Dict{String,Any}()), file),
                 get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
                 archs, arch, login_arch,
@@ -256,6 +258,16 @@ function load_site(name::AbstractString)
                 get(julia, "compute_internet", true),
                 get(julia, "registry_update", true),
                 env)
+end
+
+"The table `[julia.versions]`: a Julia version, as a run names it, and the binary that runs it."
+function julia_versions(table, file)
+    table isa AbstractDict && all(v -> v isa AbstractString, values(table)) ||
+        fail("$file: [julia.versions] names a binary for each version, such as \"1.14\" = \"~/julia-1.14/bin/julia\"")
+    for v in keys(table)
+        occursin(JULIA_VERSION_RE, v) || fail("$file: [julia.versions]: $(repr(v)) is not a Julia version or a juliaup channel")
+    end
+    return Dict{String,String}(k => v for (k, v) in table)
 end
 
 const QUEUE_KEYS = ["partition", "min_time", "max_time", "max_nodes", "max_gpus", "one_at_a_time", "preempt", "prefer",

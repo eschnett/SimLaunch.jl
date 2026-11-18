@@ -69,6 +69,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 | `VAR=value julia …`, `export VAR` | `vars`, for the job or for one run |
 | `mpiexec --mca io romio321`, `-x VAR` | `vars = { OMPI_MCA_io = "romio321" }`: a run's `vars` reach every rank. `launcher_args` for an option that has no variable |
 | `--check-bounds=yes` and other Julia options | `julia_args` |
+| `julia +1.13`, another Julia version | `julia = "1.13"` |
 | `perf stat …`, `taskset …` before `julia` | `prefix` |
 | A baseline checkout beside the new one (`TREEAMR_BASE`) | a variant: `snapshot --variant base=<directory>`, then `variant = "base"` in a run |
 | `$OUT/<stem>.tsv`, one output file per run | each run's `output.log`, in its own job directory; files the script writes land there too |

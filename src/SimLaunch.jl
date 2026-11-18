@@ -26,6 +26,8 @@ user_sites_dir() = get(ENV, "SIMLAUNCH_SITES", joinpath(homedir(), ".config", "s
 sites_dirs() = [user_sites_dir(), joinpath(PKGROOT, "sites")]
 
 const NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+"A Julia version or a juliaup channel, as a run names it: \"1.14\", \"1.14.0-beta1\", \"beta\"."
+const JULIA_VERSION_RE = r"^[A-Za-z0-9][A-Za-z0-9_.~-]*$"
 
 "Names become directory names and go into shell scripts: keep them plain."
 function checkname(what, name)

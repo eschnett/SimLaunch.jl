@@ -59,10 +59,17 @@ function sbatch_header(io::IO, site::Site; queue, gpus, time, name, output, node
     return
 end
 
-"The Julia binary of a run or a combination, as bash text: the site's, or its MPI recipe's."
-function julia_text(site::Site, recipe)
+"""
+The Julia binary of a run or a combination, as bash text: its MPI recipe's;
+for a Julia version, the binary the profile names for it, or else juliaup's
+channel of `bin`; else `bin`, the site's own.
+"""
+function julia_text(site::Site, recipe, julia = ""; bin = "\"\$JULIA\"")
     rec = isempty(recipe) ? nothing : site.mpi[recipe]
-    return rec === nothing || rec.julia_bin === nothing ? "\"\$JULIA\"" : shpath(rec.julia_bin)
+    rec === nothing || rec.julia_bin === nothing || return shpath(rec.julia_bin)
+    isempty(julia) && return bin
+    haskey(site.julia_versions, julia) && return shpath(site.julia_versions[julia])
+    return "$bin +$julia"                              # juliaup's channel
 end
 
 "Bash lines that load a recipe's modules and export its variables."
@@ -82,7 +89,7 @@ end
 "The command of one run, as bash text: its launcher, its placement and its Julia command."
 function run_command(job::Job, r::Run)
     site = job.site
-    julia = julia_text(site, r.mpi)
+    julia = julia_text(site, r.mpi, r.julia)
     envdir = "\"\$CODE\"/" * q(r.envdir)
     # A step under srun has its own shape. Without the job's SLURM_CPUS_PER_TASK, srun does not warn that a
     # step with fewer and wider tasks "may never run" (Slurm 21.08: it runs the same).
@@ -300,8 +307,8 @@ function generate(job::Job; script = "", successor = true)
           # The environment must be precompiled for this Julia and these flags:
           # a job compiles nothing.
           """)
-    for (recipe, args, envdir) in unique!([(r.mpi, r.julia_args, r.envdir) for r in job.runs])
-        check = join([julia_text(site, recipe), q.(args)..., "--startup-file=no", "--project=\"\$CODE\"/$(q(envdir))",
+    for (recipe, args, envdir, julia) in unique!([(r.mpi, r.julia_args, r.envdir, r.julia) for r in job.runs])
+        check = join([julia_text(site, recipe, julia), q.(args)..., "--startup-file=no", "--project=\"\$CODE\"/$(q(envdir))",
                       "\"\$TOOLS\"/check_precompiled.jl", "||", "exit", "3"], " ")
         if isempty(recipe) || isempty(site.mpi[recipe].modules)
             println(io, check)

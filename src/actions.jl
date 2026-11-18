@@ -6,7 +6,7 @@ prepared_file(site::Site, study, arch) = joinpath(study_depot(site, study, arch)
 
 "A combination's line in the study's `prepared` file on a site."
 function combo_line(c::Combo)
-    own = isempty(env_kinds(c.env)) && c.variant == "default"       # the project itself, as the snapshot holds it
+    own = c.envdir == joinpath("src", c.project)                       # the project itself, as the snapshot holds it
     fields = [own ? c.project : c.envdir, c.args, c.gpu ? "gpu" : "", c.target]
     while length(fields) > 1 && isempty(fields[end])
         pop!(fields)
@@ -64,7 +64,7 @@ end
 "Bash text that precompiles one combination, checks it and records it."
 function precompile_block(io::IO, site::Site, c::Combo; instantiate::Bool)
     flags = isempty(c.args) ? "" : c.args * " "
-    julia = "$(julia_text(site, c.mpi)) $(flags)--startup-file=no --project=\"\$CODE\"/$(q(c.envdir))"
+    julia = "$(julia_text(site, c.mpi, c.julia)) $(flags)--startup-file=no --project=\"\$CODE\"/$(q(c.envdir))"
     println(io)
     println(io, "echo \"=== precompile $(combo_text(c)) ===\"")
     println(io, "(")                                   # a recipe's modules and variables stay in here
@@ -105,16 +105,22 @@ function prepare_script(site::Site, study, needed)
 
                                   "\$JULIA" --startup-file=no -e 'using Pkg; Pkg.Registry.update()'
                                   """)
+    # every Julia version the specs name runs here, before anything is written
+    for v in unique!(filter(!isempty, [c.julia for c in needed]))
+        println(io, "$(julia_text(site, "", v)) --version >/dev/null 2>&1 || { echo \"Julia $v does not run on $(site.name): ",
+                haskey(site.julia_versions, v) ? "check [julia.versions] in its profile" :
+                "add it with \\`juliaup add $v\\`, or name its binary in [julia.versions] of the profile", "\" >&2; exit 1; }")
+    end
     for c in unique(c -> c.envdir, needed)
-        julia = julia_text(site, c.mpi)
+        julia = julia_text(site, c.mpi, c.julia)
         kinds = env_kinds(c.env)
         println(io)
-        if isempty(kinds)
+        if c.envdir == variant_project(c.project, c.variant)
             println(io, "echo \"=== instantiate $(c.envdir) ===\"")
             println(io, "$julia --startup-file=no --project=\"\$CODE\"/$(q(c.envdir)) -e 'using Pkg; Pkg.instantiate()'")
             continue
         end
-        packages = unique!(reduce(vcat, [ENV_KINDS[k].packages for k in kinds]))
+        packages = unique!(String[p for k in kinds for p in ENV_KINDS[k].packages])
         # An environment whose caches a compute node compiled is left as it is: writing it again makes
         # this node compile MPIPreferences anew, and the caches that were built on it are then stale.
         users = [u for u in needed if u.envdir == c.envdir]
@@ -127,7 +133,8 @@ function prepare_script(site::Site, study, needed)
             println(io, "else")
         end
         "test" in kinds && pushfirst!(packages, "--test")
-        println(io, "echo \"=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(kinds, ", ")) ===\"")
+        what = [isempty(kinds) ? String[] : [join(kinds, ", ")]; isempty(c.julia) ? String[] : ["Julia $(c.julia)"]]
+        println(io, "echo \"=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(what, ", ")) ===\"")
         println(io, "(")
         recipe_setup(io, site, c.mpi)
         println(io, "$julia --startup-file=no \"\$CODE\"/tools/make_env.jl \"\$CODE\"/$(q(variant_project(c.project, c.variant))) ",
@@ -368,7 +375,7 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     if isempty(specs)
         project = snap["project"]
         push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", s.cores == 0, "",
-                            site_arch(s, s.cores == 0), cpu_target(s, s.cores == 0)))
+                            site_arch(s, s.cores == 0), cpu_target(s, s.cores == 0), ""))
     end
     unique!(needed)
     check_connection(s)

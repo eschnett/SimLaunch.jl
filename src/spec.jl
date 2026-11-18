@@ -17,6 +17,7 @@ struct Run
     mpi::String                       # a recipe of the site's profile, or ""
     prefix::Vector{String}            # words put before the Julia command, each quoted
     launcher_args::Vector{String}     # further arguments of the MPI launcher, after the recipe's
+    julia::String                     # a Julia version or juliaup channel, such as "1.14"; "": the site's own Julia
 end
 
 "The restart contract: the names of the driver's arguments, and how its checkpoints are told apart."
@@ -57,9 +58,9 @@ end
 # Keys that may depend on the site: read from [site.<name>], with the top
 # level as the default.
 const SITE_KEYS = ["time", "resources", "mode", "threads", "pin", "env", "blas_threads",
-                   "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "domains_per_rank", "prefix", "launcher_args"]
+                   "julia", "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "domains_per_rank", "prefix", "launcher_args"]
 const TOP_KEYS = ["name", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
-const RUN_KEYS = ["label", "cmd", "threads", "julia_args", "vars", "variant", "env", "ranks", "nodes",
+const RUN_KEYS = ["label", "cmd", "threads", "julia", "julia_args", "vars", "variant", "env", "ranks", "nodes",
                   "placement", "domains_per_rank", "mpi", "prefix", "launcher_args"]
 const RESTART_KEYS = ["from", "to", "walltime", "margin", "continue_code", "temporary", "compare"]
 
@@ -77,16 +78,19 @@ const ENV_KINDS = Dict("cuda" => (packages = ["CUDA"], warm = "using CUDA; CUDA.
 env_kinds(env) = filter(!=("default"), split(env, '+'))
 
 """
-A run's environment, relative to the study's directory. Without kinds it is
-the project itself, in its variant; with kinds it is written by `prepare`.
-`own` is the study's own project, `recipe` the run's MPI recipe.
+A run's environment, relative to the study's directory. Without kinds and
+without a Julia version it is the project itself, in its variant; else it is
+written by `prepare`, one per Julia version, since a manifest is written for
+one. `own` is the study's own project, `recipe` the run's MPI recipe, `julia`
+its Julia version.
 """
-function env_dir(project, env, own; variant = "default", recipe = "")
+function env_dir(project, env, own; variant = "default", recipe = "", julia = "")
     kinds = env_kinds(env)
-    if isempty(kinds)
+    if isempty(kinds) && isempty(julia)
         return variant == "default" ? joinpath("src", project) : joinpath("variants", variant, "src", project)
     end
-    name = "$variant-" * join(kinds, '+') * (isempty(recipe) ? "" : "-$recipe")
+    name = variant * (isempty(kinds) ? "" : "-" * join(kinds, '+')) * (isempty(recipe) ? "" : "-$recipe") *
+           (isempty(julia) ? "" : "-julia$julia")
     project == own || (name *= "-" * replace(project, r"[^A-Za-z0-9_.-]" => "-"))
     return joinpath("envs", name)
 end
@@ -95,8 +99,8 @@ end
 variant_project(project, variant) =
     variant == "default" ? joinpath("src", project) : joinpath("variants", variant, "src", project)
 
-# Fields of the design that are not implemented.
-const LATER_KEYS = Dict("julia" => 4)
+# Fields of the design that are not implemented, and the milestone that brings each.
+const LATER_KEYS = Dict{String,Int}()
 
 function check_keys(table, allowed, where)
     for key in keys(table)
@@ -302,6 +306,9 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         variant in variants ||
             fail("$where: study $study has no variant $(repr(variant)); its variants: ", join(variants, ", "),
                  ". A variant is added when the snapshot is taken: `simlaunch snapshot … --variant $variant=<path>`")
+        julia = get(r, "julia", setting("julia", ""))
+        julia isa AbstractString && (julia = String(lstrip(julia, '+')); isempty(julia) || occursin(JULIA_VERSION_RE, julia)) ||
+            fail("$where: `julia` is a Julia version or a juliaup channel, such as \"1.14\" or \"beta\"")
         env = get(r, "env", setting("env", "default"))
         env isa AbstractString || fail("$where: `env` is a string such as \"cuda\" or \"test+mpi\"")
         for kind in env_kinds(env)
@@ -346,6 +353,9 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                 fail("$where: the MPI recipe $recipe of $(site.name) starts its ranks with srun, which a GPU job's ",
                      "allocation here is not set up for; use a recipe with `launcher = \"mpiexec\"`")
             "mpi" in env_kinds(env) || (env = join([env_kinds(env); "mpi"], '+'))
+            isempty(julia) || rec.julia_bin === nothing ||
+                fail("$where: the MPI recipe $recipe of $(site.name) runs its own Julia, $(rec.julia_bin), ",
+                     "so a run with it cannot ask for Julia $julia")
         elseif "mpi" in env_kinds(env)
             fail("$where: the environment `mpi` needs `mpi`, the recipe that says which MPI it is built for")
         end
@@ -401,8 +411,8 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                 fail("$file: run $label asks for $t threads, but the $domains NUMA domain$(domains == 1 ? "" : "s") ",
                      "it is bound to $(domains == 1 ? "has" : "have") $share cores")
             push!(runs, Run(scan ? "$label-t$t" : label, words, t, args, vars, variant, env,
-                            env_dir(project, env, own; variant, recipe), ranks, run_nodes, placement, domains, recipe,
-                            prefix, launcher_args))
+                            env_dir(project, env, own; variant, recipe, julia), ranks, run_nodes, placement, domains, recipe,
+                            prefix, launcher_args, julia))
         end
     end
     allunique(labels) || fail("$file: two runs have the same label")
@@ -505,6 +515,7 @@ struct Combo
     mpi::String                       # the MPI recipe the environment is built for, or ""
     arch::String                      # the architecture of the nodes it runs on: which depot holds its caches
     target::String                    # that architecture's JULIA_CPU_TARGET, or ""
+    julia::String                     # the Julia version, or "": the site's own Julia
 end
 
 "The architecture of the nodes a job runs on."
@@ -512,5 +523,5 @@ job_arch(job::Job) = queue_arch(job.site, job.queue, job.gpus > 0)
 
 "The combinations a job needs."
 combos(job::Job) = unique!([Combo(job.project, r.variant, r.env, r.envdir, join(r.julia_args, " "), job.gpus > 0, r.mpi,
-                                  job_arch(job), job.site.archs[job_arch(job)])
+                                  job_arch(job), job.site.archs[job_arch(job)], r.julia)
                             for r in job.runs])

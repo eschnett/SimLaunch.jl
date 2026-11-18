@@ -588,8 +588,11 @@ measured, and the job log echoes it at the end.
 expands into a scan, `threads = [1, 8, 16, 32, 64]`), `julia_args`
 (`["--check-bounds=yes"]`), `ranks`, `nodes`, `placement`, `mpi`, `prefix`,
 and `vars` for environment variables a script reads, such as TreeWaveOLDG's
-`TREEWAVEOLDG_RUNS`. A run's `julia` (a juliaup channel such as `"+1.13"`)
-is not implemented. An `[after]` table names one shell command run inside
+`TREEWAVEOLDG_RUNS`. A run's `julia` (`"1.13"`, a version or a juliaup
+channel) runs it with the binary the site's profile names for that version
+in `[julia.versions]`, or else as juliaup's channel, `<bin> +1.13`, in an
+environment of its own per version (`envs/default-julia1.13/`). An MPI
+recipe with a Julia of its own excludes it. An `[after]` table names one shell command run inside
 the job after the last run, for a table such as TreeAMR's `mpitable.awk`. It
 runs in the study's output directory, with `PROJECT` and
 `SIMLAUNCH_JOBDIRS` (this job's directories) exported, and its output goes
@@ -1221,11 +1224,14 @@ Milestones 1 to 3 of the plan's four are implemented.
   `scancel`: a precompile lock that is held or stale, a pre-empted job that
   submits its successor, and Nibi's GPU jobs.
 - Run on the laptop by hand: two versions of a package in one job, with MPI
-  ranks under MPICH_jll's `mpiexec`.
+  ranks under MPICH_jll's `mpiexec`; on 2026-11-18, a suite of a commit
+  (`snapshot --rev HEAD`) in one job at the site's Julia, 1.13.4, and at
+  `julia = "1.14"`, juliaup's 1.14.0-beta1, each in its own `test`
+  environment and with its own `compiled/v1.x` in the study's depot.
 - Not yet run with a real code: restart chains. A real pre-emption
   has not happened, only its signal.
-- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
-  refused for; the memory part of the resource check; `--snapshot-pins`.
+- Not yet run on a cluster: a run's own Julia version, and `snapshot --rev`.
+- Not yet: the memory part of the resource check; `--snapshot-pins`.
 
 ## Plan and open questions
 

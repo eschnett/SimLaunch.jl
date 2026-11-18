@@ -281,7 +281,7 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
             mkdir "combined-\$n"; cd "combined-\$n"
             export JULIA_DEPOT_PATH=$(shpath(joinpath(scratch, "combine-depot"))):$(shpath(study_depot(s, study, s.login_arch))):
             unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET
-            $(shpath(s.julia_bin)) --startup-file=no --project=$(shpath(joinpath(code, r.envdir))) $(shpath(joinpath(code, "src", job.project, job.combine[1]))) $(join(q.(job.combine[2:end]), " ")) "\${dirs[@]}" > combine.log 2>&1 || { cat combine.log >&2; exit 1; }
+            $(julia_text(s, "", r.julia; bin = shpath(s.julia_bin))) --startup-file=no --project=$(shpath(joinpath(code, r.envdir))) $(shpath(joinpath(code, "src", job.project, job.combine[1]))) $(join(q.(job.combine[2:end]), " ")) "\${dirs[@]}" > combine.log 2>&1 || { cat combine.log >&2; exit 1; }
             cd ..; chmod -R a-w "combined-\$n"; echo "\$PWD/combined-\$n"
             """
         out = strip(readsite(s, script))

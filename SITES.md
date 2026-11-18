@@ -228,6 +228,7 @@ the login node compiles for all nodes. A target does not start with
 | Key | Default | Meaning |
 |-----|---------|---------|
 | `bin` | `"julia"` | The Julia of the site. May start with `~/` |
+| `versions` | none | A table: a Julia version, as a spec's `julia` names it, and the binary that runs it, such as `"1.14" = "~/julia-1.14.0-beta1/bin/julia"`. A version that is not here runs as juliaup's channel, `<bin> +1.14`, so `bin` must be juliaup's launcher for it |
 | `depot` | `"~/.julia"` | The site's shared depot: packages, artifacts, registries. Compiled caches are the study's own |
 | `modules` | none | Environment modules that every job loads |
 | `arch`, `login_arch` | | See [`[arch]`](#arch) |

@@ -139,6 +139,8 @@ end
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
+          [julia.versions]                 # a made-up version that this Julia stands in for
+          "9.9" = "$(joinpath(Sys.BINDIR, "julia"))"
           [mpi]
           default = "mpiabi"
           [mpi.mpiabi]
@@ -221,6 +223,51 @@ end
             @test_throws UserError snapshot(toy; study = "bad name")
         end
 
+        @testset "snapshot of a commit" begin
+            # the commit, not the working tree: not its uncommitted change, nor an untracked file
+            write(joinpath(toy, "untracked.jl"), "")
+            dest = snapshot(toy; study = "toy-rev", rev = "HEAD")
+            rm(joinpath(toy, "untracked.jl"))
+            @test !occursin("an uncommitted change", read(joinpath(dest, "src", "Toy", "src", "Toy.jl"), String))
+            @test !ispath(joinpath(dest, "src", "Toy", "untracked.jl"))
+            @test !ispath(joinpath(dest, "src", "Toy", "Manifest.toml")) && !ispath(joinpath(dest, "src", "Toy", "backup.jl~"))
+            @test isfile(joinpath(dest, "src", "ToyDep", "src", "ToyDep.jl"))    # outside the repository: its working tree
+            pkgs = Dict(p["name"] => p for p in load_snapshot("toy-rev")["package"])
+            @test pkgs["Toy"]["sha"] == readchomp(`git -C $toy rev-parse HEAD`) && pkgs["Toy"]["rev"] == "HEAD"
+            @test !pkgs["Toy"]["dirty"] && !haskey(pkgs["Toy"], "diff") && pkgs["Toy"]["path"] == realpath(toy)
+            @test !haskey(pkgs["ToyDep"], "rev")
+            @test_throws "has no commit" snapshot(toy; study = "toy-rev2", rev = "nope")
+            @test_throws "is not in one" snapshot(joinpath(dirname(toy), "ToyDep"); study = "toy-rev2", rev = "HEAD")
+            @test !ispath(joinpath(ENV["SIMLAUNCH_CACHE"], "toy-rev2"))
+            # a path package of the repository that the working tree no longer has is copied from the commit
+            repo = mkpath(joinpath(root, "repo"))
+            outer, inner = mkpath(joinpath(repo, "Outer", "src")), mkpath(joinpath(repo, "Outer", "lib", "Inner", "src"))
+            write(joinpath(repo, "Outer", "Project.toml"), """
+                  name = "Outer"
+                  uuid = "44444444-4444-4444-8444-444444444444"
+                  [deps]
+                  Inner = "55555555-5555-4555-8555-555555555555"
+                  [sources]
+                  Inner = {path = "lib/Inner"}
+                  """)
+            write(joinpath(outer, "Outer.jl"), "module Outer end\n")
+            write(joinpath(dirname(inner), "Project.toml"), "name = \"Inner\"\nuuid = \"55555555-5555-4555-8555-555555555555\"\n")
+            write(joinpath(inner, "Inner.jl"), "module Inner end\n")
+            run(`git -C $repo init -q`); run(`git -C $repo add -A`)
+            run(`git -C $repo -c user.name=test -c user.email=test@example.org commit -q -m init`)
+            rm(joinpath(repo, "Outer", "lib"); recursive = true)
+            @test_throws "does not exist" snapshot(joinpath(repo, "Outer"); study = "outer")
+            out = mktemp() do path, io
+                redirect_stdout(io) do
+                    @test SimLaunch.command(["snapshot", joinpath(repo, "Outer"), "--study", "outer", "--rev", "HEAD"]) == 0
+                end
+                close(io); read(path, String)
+            end
+            dest = joinpath(ENV["SIMLAUNCH_CACHE"], "outer")
+            @test isfile(joinpath(dest, "src", "Outer", "lib", "Inner", "src", "Inner.jl"))
+            @test occursin(r"Outer\s+[0-9a-f]{10}, the commit HEAD", out)
+        end
+
         @testset "specs" begin
             trillium, loc = load_site("trillium"), load_site("local")
         @testset "snapshot of a commit" begin
@@ -285,6 +332,33 @@ end
             # only some of the runs
             @test [r.label for r in job(spec_text(RUNS), loc; only_runs = ["n5"]).runs] == ["n5"]
             @test_throws "no run" job(spec_text(RUNS), loc; only_runs = ["n7"])
+            # a run's Julia version: juliaup's channel, or the binary the profile names for it
+            versions = """
+                       [[run]]
+                       label = "new"
+                       cmd = "examples/hello.jl n=1"
+
+                       [[run]]
+                       label = "floor"
+                       cmd = "examples/hello.jl n=1"
+                       julia = "1.13"
+                       env = "test"
+
+                       [[run]]
+                       label = "site"
+                       cmd = "examples/hello.jl n=1"
+                       julia = ""
+                       """
+            j = job(spec_text(versions; top = "julia = \"+1.14\""), trillium)
+            @test [r.julia for r in j.runs] == ["1.14", "1.13", ""]
+            @test [r.envdir for r in j.runs] == ["envs/default-julia1.14", "envs/default-test-julia1.13", "src/Toy"]
+            @test [c.julia for c in SimLaunch.combos(j)] == ["1.14", "1.13", ""]
+            script = generate(j)
+            @test occursin("\"\$JULIA\" +1.14 -t 32", script) && occursin("\"\$JULIA\" +1.13 -t 32", script)
+            @test occursin("\"\$JULIA\" +1.14 --startup-file=no --project=\"\$CODE\"/envs/default-julia1.14 \"\$TOOLS\"/check_precompiled.jl", script)
+            script = generate(job(spec_text(versions; top = "julia = \"9.9\""), loc))
+            @test occursin("$(SimLaunch.shpath(joinpath(Sys.BINDIR, "julia"))) -t", script) && !occursin("+9.9", script)
+            @test_throws "is a Julia version" job(spec_text(RUNS; top = "julia = \"1 14\""), loc)
             # refusals
             many = join(["[[run]]\nlabel = \"r$i\"\ncmd = \"examples/hello.jl n=$i\"\n" for i in 1:7], "\n")
             @test_throws "224 threads" job(spec_text(many), trillium)             # 7 × 32 > 192
@@ -309,7 +383,7 @@ end
             @test load_site("cluster").mpi_default === nothing
             @test_throws "names no default" job(mspec("ranks = 2\n"), load_site("cluster"))
             @test_throws "names no default" job(mspec("mpi = \"default\"\n"), load_site("cluster"))
-            @test_throws "milestone 4" job(spec_text(RUNS * "julia = \"+1.13\"\n"), trillium)
+            @test_throws "runs its own Julia" job(mspec("ranks = 2\njulia = \"1.14\"\n"), trillium)   # its recipe's patched Julia
             @test_throws "no variant" job(spec_text(RUNS * "variant = \"base\"\n"), trillium)
             # a spec written for one site names it, and has no site tables
             one = "name = \"hello\"\nsite = \"kepler\"\ntime = \"1:00:00\"\n" * RUNS
@@ -531,6 +605,40 @@ end
             wait_for(scratch, ["hello-n3", "hello-n5"])
             sleep(1)
             @test isdir(joinpath(scratch, "hello-n3", "002-$jobid2")) && isdir(dir)
+        end
+
+        @testset "a run's Julia version" begin
+            f = spec(replace(spec_text("""
+                                       [[run]]
+                                       label = "own"
+                                       cmd = "examples/hello.jl n=2"
+                                       threads = 1
+
+                                       [[run]]
+                                       label = "other"
+                                       cmd = "examples/hello.jl n=2"
+                                       threads = 1
+                                       julia = "9.9"
+                                       """), "name = \"hello\"" => "name = \"jv\""))
+            loc = load_site("local")
+            code = study_code(loc, "toy")
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [f], io = devnull)
+            end
+            # an environment of its own, written by prepare: its manifest is for that Julia
+            env = joinpath(code, "envs", "default-julia9.9")
+            @test isfile(joinpath(env, "Project.toml")) && isfile(joinpath(env, "Manifest.toml"))
+            @test "envs/default-julia9.9" in readlines(SimLaunch.prepared_file(loc, "toy", loc.arch))
+            jobid = submit("toy", f; site = "local", io = devnull)
+            own, other = wait_for(scratch, ["jv-own", "jv-other"])
+            @test own["status"] == other["status"] == "finished"
+            @test occursin("answer = 5", read(joinpath(scratch, "jv-other", "001-$jobid", "output.log"), String))
+            # a version that the site has neither as a binary nor as juliaup's channel
+            bad = spec(replace(read(f, String), "\"9.9\"" => "\"8.8\"", "name = \"jv\"" => "name = \"jvbad\""))
+            @test_throws Exception redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [bad], io = devnull)
+            end
+            @test occursin("Julia 8.8 does not run on local", read(joinpath(scratch, "prepare.log"), String))
         end
 
         @testset "a failing run and a stopped job" begin
