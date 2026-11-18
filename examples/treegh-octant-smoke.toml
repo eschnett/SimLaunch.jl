@@ -7,7 +7,7 @@ time = "0:30:00"
 resources = { gpus = 1 }
 env = "cuda"
 
-[site.symmetry]                     # one H200
+[site.nibi]                         # one H100
 time = "0:30:00"
 resources = { gpus = 1 }
 env = "cuda"

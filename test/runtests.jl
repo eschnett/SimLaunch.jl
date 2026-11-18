@@ -145,8 +145,24 @@ end
           binary = "MPIABI_jll"
           launcher = "mpiexec"
           """)
-    for name in ("trillium", "trillium-gpu", "symmetry", "nibi", "fir")
-        cp(joinpath(pkgdir(SimLaunch), "sites", "$name.toml"), joinpath(sites, "$name.toml"))
+    # a cluster that does not exist, and the package's profiles with a user's part filled in
+    cp(joinpath(@__DIR__, "sites", "kepler.toml"), joinpath(sites, "kepler.toml"))
+    for name in ("trillium", "trillium-gpu", "nibi", "fir")
+        write(joinpath(sites, "$name.toml"), """
+              base = "$name"
+              [paths]
+              code = "/home/user/studies"
+              scratch = "/scratch/user/studies"
+              [slurm]
+              account = "def-user"
+              [mpi]
+              default = "system"
+              [mpi.system]
+              julia = "~/julia-$name/bin/julia"
+              [mpi.system.preferences]
+              library_names = ["/home/user/openmpi-mpi-abi/lib64/libmpi_abi.so"]
+              mpiexec = "/home/user/openmpi-mpi-abi/bin/mpiexec"
+              """)
     end
     # a Slurm site on this machine, with the stand-ins of test/fakeslurm for sbatch and squeue
     write(joinpath(sites, "cluster.toml"), """
@@ -251,9 +267,9 @@ end
             @test_throws "milestone 4" job(spec_text(RUNS * "julia = \"+1.13\"\n"), trillium)
             @test_throws "no variant" job(spec_text(RUNS * "variant = \"base\"\n"), trillium)
             # a spec written for one site names it, and has no site tables
-            one = "name = \"hello\"\nsite = \"symmetry\"\ntime = \"1:00:00\"\n" * RUNS
-            @test_throws "for site symmetry only" job(one, trillium)
-            @test job(replace(one, "symmetry" => "trillium"), trillium).time == 3600
+            one = "name = \"hello\"\nsite = \"kepler\"\ntime = \"1:00:00\"\n" * RUNS
+            @test_throws "for site kepler only" job(one, trillium)
+            @test job(replace(one, "kepler" => "trillium"), trillium).time == 3600
             @test_throws "no `time`" job(replace(spec_text(RUNS), "time = \"3:00:00\"" => ""), trillium)
             # a spec written in Julia: the value of the file, read as its TOML is
             jl(text) = (f = tempname(root) * ".jl"; write(f, text); f)
@@ -295,7 +311,7 @@ end
 
         gpu_spec = """
             name = "gpu"
-            [site.symmetry]
+            [site.kepler]
             time = "0:30:00"
             resources = { gpus = 1 }
             env = "cuda"
@@ -312,32 +328,32 @@ end
             cmd = "examples/hello.jl n=3"
             """
         @testset "architectures" begin
-            sym, fir, tri = load_site("symmetry"), load_site("fir"), load_site("trillium")
+            sym, fir, tri = load_site("kepler"), load_site("fir"), load_site("trillium")
             # nodes of one architecture share a depot; the login node compiles for the nodes that have its own
             @test SimLaunch.site_arch(sym, false) == "amd" && SimLaunch.site_arch(sym, true) == "h200" && sym.login_arch == "login"
             @test SimLaunch.cpu_target(sym, false) == "znver2" && SimLaunch.cpu_target(sym, true) == ""
             @test SimLaunch.precompile_where(sym, false) == SimLaunch.precompile_where(sym, true) == "compute"
-            @test SimLaunch.study_depot(sym, "s", "h200") == "/home/eschnetter/claude/studies/s/depot-h200"
+            @test SimLaunch.study_depot(sym, "s", "h200") == "/home/user/studies/s/depot-h200"
             @test SimLaunch.precompile_where(fir, false) == "login" && SimLaunch.precompile_where(fir, true) == "compute"
             @test tri.archs == Dict("default" => "") && SimLaunch.precompile_where(tri, false) == "login"
             # a queue can hold another kind of node: its own architecture, taken only by name; and its own batch options
-            big = "name = \"big\"\nsite = \"symmetry\"\ntime = \"2:00:00\"\n[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n"
+            big = "name = \"big\"\nsite = \"kepler\"\ntime = \"2:00:00\"\n[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n"
             job(text; kw...) = resolve(TOML.parse(text), sym; study = "toy", project = "Toy", kw...)
             j = job(big)
             @test j.queue.partition == "amdq" && SimLaunch.job_arch(j) == "amd" && only(combos(j)).target == "znver2"
             @test occursin("#SBATCH --exclude=cn112\n", generate(j)) && occursin("/toy/depot-amd ", generate(j))
             pre = SimLaunch.precompile_script(sym, "toy", combos(j))
             @test occursin("#SBATCH --partition=amddebugq\n", pre) && occursin("#SBATCH --exclude=cn112\n", pre)
-            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy/depot-amd\n", pre) && occursin("export JULIA_CPU_TARGET=znver2\n", pre)
+            @test occursin("DEPOT=/home/user/studies/toy/depot-amd\n", pre) && occursin("export JULIA_CPU_TARGET=znver2\n", pre)
             j = job(big; queue = "largememq")
             @test SimLaunch.job_arch(j) == "zen4c" && only(combos(j)).arch == "zen4c" && only(combos(j)).target == ""
             @test !occursin("--exclude", generate(j)) && occursin("/toy/depot-zen4c ", generate(j)) && !occursin("export JULIA_CPU_TARGET", generate(j))
             @test job(replace(big, "time =" => "queue = \"largememq\"\ntime =")).queue.partition == "largememq"
             pre = SimLaunch.precompile_script(sym, "toy", combos(j))
             @test occursin("#SBATCH --partition=largememq\n", pre) && !occursin("--exclude", pre)
-            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy/depot-zen4c\n", pre)
+            @test occursin("DEPOT=/home/user/studies/toy/depot-zen4c\n", pre)
             why = try job(replace(big, "2:00:00" => "30:00:00")); "" catch err; err.msg end
-            @test occursin("which no queue of symmetry takes", why) && !occursin("largememq", why)
+            @test occursin("which no queue of kepler takes", why) && !occursin("largememq", why)
             @test_throws "at most 1 nodes" job(replace(big, "time =" => "resources = { nodes = 2 }\ntime ="); queue = "largememq")
             profile(text) = (write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n" *
                                                                 "[connect]\nhost = \"odd\"\n[slurm]\nnode = { cores = 4 }\n" * text);
@@ -358,6 +374,39 @@ end
             @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
             odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
             @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"
+            # profiles: the user's come before the package's, and one with a `base` holds only what differs
+            tri = load_site("trillium")
+            @test tri.account == "def-user" && tri.code == "/home/user/studies" && tri.cores == 192 && tri.mpi_default == "system"
+            @test tri.mpi["system"].modules == ["StdEnv/2023"] && isempty(tri.mpi["system"].unset)
+            @test tri.mpi["system"].preferences["abi"] == "MPIABI" && startswith(tri.mpi["system"].preferences["mpiexec"], "/home/user/")
+            @test SimLaunch.read_profile("trillium")[2] == [joinpath(sites, "trillium.toml"), joinpath(pkgdir(SimLaunch), "sites", "trillium.toml")]
+            @test issubset(["cluster", "fir", "kepler", "local", "nibi", "trillium", "trillium-gpu"], SimLaunch.known_sites())
+            write(joinpath(sites, "mine.toml"), "base = \"trillium\"\n[slurm]\naccount = \"def-other\"\n")   # on top of the user's
+            @test load_site("mine").account == "def-other" && load_site("mine").code == "/home/user/studies"
+            write(joinpath(sites, "mine.toml"), "base = \"nowhere\"\n")
+            @test_throws "no profile for its base" load_site("mine")
+            write(joinpath(sites, "mine.toml"), "base = \"mine\"\n")
+            @test_throws "no profile for its base" load_site("mine")
+            rm(joinpath(sites, "mine.toml"))
+            @test_throws "no profile for site" load_site("mine")
+            # the package's profile of a public cluster leaves the account and the directories to the user
+            withenv("SIMLAUNCH_SITES" => mkpath(joinpath(root, "nosites"))) do
+                @test SimLaunch.known_sites() == ["fir", "local", "nibi", "trillium", "trillium-gpu"]
+                @test load_site("local").mpi_default == "abi"
+                why = try load_site("trillium"); "" catch err; err.msg end
+                @test occursin("leaves these to you: `paths.code`", why) && occursin("`slurm.account` (your Slurm account", why)
+                @test occursin(joinpath(root, "nosites", "trillium.toml"), why) && occursin("base = \"trillium\"", why)
+                @test !occursin("mpi.", why)
+                write(joinpath(root, "nosites", "trillium.toml"),
+                      "base = \"trillium\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n[slurm]\naccount = \"a\"\n")
+                bare = load_site("trillium")
+                @test bare.mpi_default == "jll" && isempty(bare.mpi["jll"].unset)
+                @test length(bare.mpi["system"].unset) == 3 && any(startswith("`mpi.system.julia`"), bare.mpi["system"].unset)
+                mpispec = "name = \"m\"\ntime = \"1:00:00\"\n[[run]]\nlabel = \"a\"\nranks = 8\ncmd = \"examples/hello.jl\"\n"
+                onbare(text) = resolve(TOML.parse(text), bare; study = "toy", project = "Toy")
+                @test onbare(mpispec).runs[1].mpi == "jll"
+                @test_throws "the MPI recipe system of trillium leaves these to you" onbare(mpispec * "mpi = \"system\"\n")
+            end
             rm(joinpath(sites, "odd.toml"))
             # a site without a queue compiles where it runs
             write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n[arch]\nm = \"native\"\n[julia]\narch = \"m\"\n")
@@ -368,7 +417,7 @@ end
         @testset "the other sites" begin
             job(site; text = gpu_spec, kw...) =
                 resolve(load_spec(spec(text)), load_site(site); study = "toy", project = "Toy", kw...)
-            j = job("symmetry")
+            j = job("kepler")
             @test j.gpus == 1 && j.cores == 8 && j.queue.partition == "h200debugq" && j.runs[1].threads == 8
             @test j.runs[1].envdir == "envs/default-cuda"
             @test combo_line(only(combos(j))) == "envs/default-cuda\t\tgpu"
@@ -383,7 +432,7 @@ end
             j = job("nibi")
             @test j.gpus == 0 && j.queue === nothing && j.runs[1].envdir == "src/Toy"
             @test combo_line(only(combos(j))) == "Toy"
-            for (site, name) in (("symmetry", "symmetry-gpu"), ("trillium-gpu", "trillium-gpu"), ("nibi", "nibi-hello"))
+            for (site, name) in (("kepler", "kepler-gpu"), ("trillium-gpu", "trillium-gpu"), ("nibi", "nibi-hello"))
                 script = generate(job(site))
                 reference = joinpath(@__DIR__, "reference", "$name.sh")
                 get(ENV, "SIMLAUNCH_UPDATE_REFERENCE", "") == "1" && write(reference, script)
@@ -391,20 +440,20 @@ end
                 @test success(`bash -n $reference`)
             end
             # refusals
-            @test job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3")).queue.partition == "h200q"
-            @test_throws "at most 2 GPUs" job("symmetry"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3"), queue = "h200debugq")
+            @test job("kepler"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3")).queue.partition == "h200q"
+            @test_throws "at most 2 GPUs" job("kepler"; text = replace(gpu_spec, "gpus = 1" => "gpus = 3"), queue = "h200debugq")
             @test_throws "at most 4" job("trillium-gpu"; text = replace(gpu_spec, "gpus = 2" => "gpus = 5"))
-            @test_throws "at most 1:00:00" job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200debugq")
-            @test job("symmetry"; text = replace(gpu_spec, "0:30:00" => "2:00:00")).queue.partition == "h200q"
-            @test_throws "pre-emptible" job("symmetry"; queue = "h200preq")
-            @test_throws "for GPU jobs" job("symmetry"; queue = "amdq")
+            @test_throws "at most 1:00:00" job("kepler"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200debugq")
+            @test job("kepler"; text = replace(gpu_spec, "0:30:00" => "2:00:00")).queue.partition == "h200q"
+            @test_throws "pre-emptible" job("kepler"; queue = "h200preq")
+            @test_throws "for GPU jobs" job("kepler"; queue = "amdq")
             @test_throws "GPU jobs only" job("trillium-gpu"; text = replace(gpu_spec, "resources = { gpus = 2 }" => ""))
             @test_throws "has none" job("trillium"; text = replace(gpu_spec, "site.nibi" => "site.trillium",
                                                                     "mode = \"parallel\"" => "resources = { gpus = 1 }"))
             @test_throws "chooses the partition" job("nibi"; queue = "cpubase")
             @test_throws "at most 168:00:00" job("nibi"; text = replace(gpu_spec, "3:00:00" => "8-00:00:00"))
-            @test_throws "no environment" job("symmetry"; text = replace(gpu_spec, "\"cuda\"" => "\"opencl\""))
-            @test job("symmetry"; text = replace(gpu_spec, "\"cuda\"" => "\"test+cuda\"")).runs[1].envdir == "envs/default-test+cuda"
+            @test_throws "no environment" job("kepler"; text = replace(gpu_spec, "\"cuda\"" => "\"opencl\""))
+            @test job("kepler"; text = replace(gpu_spec, "\"cuda\"" => "\"test+cuda\"")).runs[1].envdir == "envs/default-test+cuda"
             # the second login node is reached through the first
             cmd = SimLaunch.sitecmd(load_site("trillium-gpu"), "echo 'a b'")
             @test cmd.exec[1:2] == ["ssh", "trillium"] && startswith(cmd.exec[3], "ssh trig-login01 ")
@@ -647,10 +696,10 @@ end
             @test occursin(r"julia\s+\S+\s+cluster: 1\.0\.0", String(take!(out)))
         end
 
-        # a spec written for Symmetry: two versions of the package, MPI ranks placed on NUMA domains, two recipes
+        # a spec written for one cluster: two versions of the package, MPI ranks placed on NUMA domains, two recipes
         nested = """
             name = "nested"
-            site = "symmetry"
+            site = "kepler"
             time = "1:00:00"
             resources = { nodes = 2 }
             node = "cn[095-096]"
@@ -695,7 +744,7 @@ end
             [combine]
             cmd = "examples/combine.jl"
 
-            [site.symmetry]
+            [site.kepler]
             time = "12:00:00"
             resources = { gpus = 1 }
             env = "cuda"
@@ -720,7 +769,7 @@ end
             @test_throws "the study's own version" snapshot(toy; study = "toy3", variants = ["default" => toy])
             job(text, site; kw...) = resolve(load_spec(spec(text)), load_site(site); study = "toy2", project = "Toy",
                                              variants = ["default", "base"], kw...)
-            j = job(nested, "symmetry")
+            j = job(nested, "kepler")
             @test j.queue.partition == "amdq" && j.nodes == 2 && j.tasks == 8         # two nodes: not amddebugq
             @test [r.envdir for r in j.runs] == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"]
             @test [r.threads for r in j.runs] == [8, 8, 8]                            # a NUMA domain each
@@ -728,8 +777,8 @@ end
             @test combo_line.(combos(j)) == ["envs/base-test+mpi-jll", "envs/default-test+mpi-system", "envs/default-test+mpi-jll"] .*
                                             "\t\t\tznver2"
             @test occursin("export JULIA_CPU_TARGET=znver2", generate(j))
-            @test occursin("DEPOT=/home/eschnetter/claude/studies/toy2/depot-amd ", generate(j))
-            prep = SimLaunch.prepare_script(load_site("symmetry"), "toy2", combos(j))
+            @test occursin("DEPOT=/home/user/studies/toy2/depot-amd ", generate(j))
+            prep = SimLaunch.prepare_script(load_site("kepler"), "toy2", combos(j))
             @test occursin("make_env.jl \"\$CODE\"/variants/base/src/Toy \"\$CODE\"/envs/base-test+mpi-jll --test MPI MPIPreferences", prep)
             @test occursin("set_mpi.jl system", prep) && occursin("module load nvhpc-hpcx-cuda12/24.9", prep)
             # ranks under srun end together; a rank's NUMA domain is counted on its node, not taken from the profile
@@ -755,7 +804,7 @@ end
                 @test code == 1 && occursin("has $n NUMA domains, which 8 ranks cannot share evenly", said)
             end
             # fewer ranks than domains: each rank has its share of them, and of the cores
-            j2 = job(replace(nested, "ranks = 8" => "ranks = 2\nlauncher_args = [\"--label\", \"a b\"]"), "symmetry")
+            j2 = job(replace(nested, "ranks = 8" => "ranks = 2\nlauncher_args = [\"--label\", \"a b\"]"), "kepler")
             @test j2.runs[1].threads == 32
             cmd = SimLaunch.run_command(j2, j2.runs[1])
             @test occursin("srun --mpi=pmi2 --label 'a b' --kill-on-bad-exit=1 --nodes=1 --ntasks=2 --cpus-per-task=32 ", cmd)
@@ -767,42 +816,42 @@ end
             @test j.runs[3].threads == 8
             bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(j, j.runs[3]))[1]
             @test placed("0") == (0, "--cpunodebind=0 --membind=0 the run\n")
-            @test_throws "evenly" job(replace(nested, "ranks = 8" => "ranks = 3"), "symmetry")
+            @test_throws "evenly" job(replace(nested, "ranks = 8" => "ranks = 3"), "kepler")
             # a prefix is words, each quoted: as a string split as a shell would, or as a list
             @test occursin(" numa perf stat -e cache-misses \"\$JULIA\" ", SimLaunch.run_command(j, j.runs[2]))
-            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = \"env 'A=b c' X=\$HOME\""), "symmetry")
+            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = \"env 'A=b c' X=\$HOME\""), "kepler")
             @test jp.runs[2].prefix == ["env", "A=b c", "X=\$HOME"]
             @test occursin(" env 'A=b c' 'X=\$HOME' ", SimLaunch.run_command(jp, jp.runs[2]))
-            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = [\"taskset\", \"-c\", \"0-7\", \"a b\"]"), "symmetry")
+            jp = job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = [\"taskset\", \"-c\", \"0-7\", \"a b\"]"), "kepler")
             @test occursin(" taskset -c 0-7 'a b' ", SimLaunch.run_command(jp, jp.runs[2]))
-            @test_throws "`prefix`" job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = 3"), "symmetry")
+            @test_throws "`prefix`" job(replace(nested, "prefix = \"perf stat -e cache-misses\"" => "prefix = 3"), "kepler")
             # the launcher's arguments are for runs with ranks
-            @test_throws "`launcher_args` is for a run with `ranks`" job(replace(nested, "vars = { TOYVAR = \"x\" }" => "launcher_args = [\"-v\"]"), "symmetry")
+            @test_throws "`launcher_args` is for a run with `ranks`" job(replace(nested, "vars = { TOYVAR = \"x\" }" => "launcher_args = [\"-v\"]"), "kepler")
             # under an mpiexec a run's variables are set for the launcher and again for every rank
-            jm = job(replace(nested, "mpi = \"system\"" => "mpi = \"hpcx\"\nvars = { ROMIO_HINTS = \"/a b/hints\" }"), "symmetry")
+            jm = job(replace(nested, "mpi = \"system\"" => "mpi = \"hpcx\"\nvars = { ROMIO_HINTS = \"/a b/hints\" }"), "kepler")
             cmd = SimLaunch.run_command(jm, jm.runs[2])
             @test startswith(cmd, "env ROMIO_HINTS='/a b/hints' ") && occursin(" -n 16 env ROMIO_HINTS='/a b/hints' bash -c ", cmd)
-            @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "symmetry")
-            @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "symmetry")
-            @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "symmetry")
+            @test_throws "do not fit" job(replace(nested, "ranks = 8" => "ranks = 16"), "kepler")
+            @test_throws "64 cores" job(replace(nested, "label = \"base-8r\"" => "label = \"base-8r\"\nthreads = 9"), "kepler")
+            @test_throws "no MPI recipe" job(replace(nested, "\"system\"" => "\"cray\""), "kepler")
             # only the named runs are checked: another run may be written for a recipe this site does not have
-            jo = job(replace(nested, "\"system\"" => "\"cray\""), "symmetry"; only_runs = ["serial"])
+            jo = job(replace(nested, "\"system\"" => "\"cray\""), "kepler"; only_runs = ["serial"])
             @test [r.label for r in jo.runs] == ["serial"]
-            @test_throws "its runs: base-8r, new-16r, serial" job(nested, "symmetry"; only_runs = ["none"])
-            @test_throws "one node only" job(replace(nested, "\"system\"" => "\"jll-fork\""), "symmetry")
-            @test_throws "pin = true" job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\npin = true"), "symmetry")
-            @test_throws "for site symmetry only" job(nested, "trillium")
+            @test_throws "its runs: base-8r, new-16r, serial" job(nested, "kepler"; only_runs = ["none"])
+            @test_throws "one node only" job(replace(nested, "\"system\"" => "\"jll-fork\""), "kepler")
+            @test_throws "pin = true" job(replace(nested, "placement = \"numa\"" => "placement = \"numa\"\npin = true"), "kepler")
+            @test_throws "for site kepler only" job(nested, "trillium")
             # a chain of jobs: a pre-emptible queue first, and never the queue that is not for chains
-            j = job(ckpt, "symmetry")
+            j = job(ckpt, "kepler")
             @test j.checkpoints && j.queue.partition == "h200preq" && j.restart.continue_code == 3
-            @test_throws "not for a chain" job(replace(ckpt, "12:00:00" => "0:30:00"), "symmetry"; queue = "h200debugq")
-            @test_throws "needs `checkpoints = true`" job(replace(ckpt, "checkpoints = true" => ""), "symmetry")
-            @test_throws "a chain of jobs needs" job(gpu_spec, "symmetry"; chain = 2)
-            @test_throws "remove `from`" job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true"), "symmetry")
-            m = job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true", "from = \"restart_from\"" => ""), "symmetry")
+            @test_throws "not for a chain" job(replace(ckpt, "12:00:00" => "0:30:00"), "kepler"; queue = "h200debugq")
+            @test_throws "needs `checkpoints = true`" job(replace(ckpt, "checkpoints = true" => ""), "kepler")
+            @test_throws "a chain of jobs needs" job(gpu_spec, "kepler"; chain = 2)
+            @test_throws "remove `from`" job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true"), "kepler")
+            m = job(replace(ckpt, "checkpoints = true" => "checkpoints = true\nmutable_restarts = true", "from = \"restart_from\"" => ""), "kepler")
             @test occursin("#SBATCH --requeue\n#SBATCH --open-mode=append", generate(m)) && !occursin("seal_earlier \"\$i\"", generate(m))
-            for (name, text) in (("symmetry-nested", nested), ("symmetry-chain", ckpt))
-                script = generate(job(text, "symmetry"))
+            for (name, text) in (("kepler-nested", nested), ("kepler-chain", ckpt))
+                script = generate(job(text, "kepler"))
                 reference = joinpath(@__DIR__, "reference", "$name.sh")
                 get(ENV, "SIMLAUNCH_UPDATE_REFERENCE", "") == "1" && write(reference, script)
                 @test script == read(reference, String)
@@ -874,7 +923,7 @@ end
             @test !iswritable(joinpath(combined, "combined.csv"))
             # fetch: into the project, by site; checkpoints stay behind
             dest = only(fetch("toy"; site = "cluster", io = devnull))
-            @test dest == joinpath(realpath(toy), ".claude", "data", "toy", "cluster")
+            @test dest == joinpath(realpath(toy), "simlaunch-data", "toy", "cluster")
             @test isfile(joinpath(dest, "chain-c", dirs[2], "count.csv")) && isfile(joinpath(dest, "chain-c", "simwatch.toml"))
             @test !ispath(joinpath(dest, "chain-c", dirs[1], "ck")) && isfile(joinpath(dest, "snapshot.toml"))
             @test isfile(joinpath(dest, "manifests", "src--Toy.toml")) && isfile(joinpath(dest, "logs", "chain-$(ids[1]).out"))

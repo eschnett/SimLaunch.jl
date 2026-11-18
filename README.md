@@ -7,22 +7,23 @@ the batch script from a short job spec and a site profile, and submits it with
 [SimWatch](https://github.com/eschnett/simwatch) status files.
 
 [![CI](https://github.com/eschnett/SimLaunch.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/eschnett/SimLaunch.jl/actions/workflows/CI.yml)
+[![Coverage](https://codecov.io/gh/eschnett/SimLaunch.jl/branch/main/graph/badge.svg)](https://codecov.io/gh/eschnett/SimLaunch.jl)
 
 - [Status](#status)
 - [Installation](#installation)
 - [Example](#example)
+- [Sites](#sites)
 - [Job specs](#job-specs)
 - [After a job](#after-a-job)
 - [Restarts](#restarts)
 - [Design](#design)
-  - [What has run where](#what-has-run-where)
 
 ## Status
 
 In development. Jobs on one node or one GPU have run on four clusters.
 Restart chains, MPI and the commands that follow a job (`status`, `fetch`,
 `wait`) have run on one cluster, with a toy project.
-[What has run where](#what-has-run-where) has the details.
+["What has run where"](PLAN.md#what-has-run-where) in the plan has the details.
 
 ## Installation
 
@@ -30,11 +31,15 @@ Needs Julia 1.12 or later, `rsync`, `ssh` and `git` on the laptop. Nothing
 is installed on a site.
 
 ```bash
-julia -e 'using Pkg; Pkg.Apps.develop(path="/path/to/SimLaunch")'
+julia -e 'using Pkg; Pkg.Apps.add("SimLaunch")'
 ```
 
-This puts `simlaunch` into `~/.julia/bin`. Without installing, run it as
-`julia --project=/path/to/SimLaunch -m SimLaunch <command>`.
+This puts `simlaunch` into `~/.julia/bin`, which must be on your `PATH`.
+`Pkg.Apps.update("SimLaunch")` takes a newer version.
+
+To work on SimLaunch itself, install it from a clone with
+`Pkg.Apps.develop(path="/path/to/SimLaunch")`, or run it without installing
+as `julia --project=/path/to/SimLaunch -m SimLaunch <command>`.
 
 ## Example
 
@@ -44,7 +49,7 @@ simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1
 
 # copy to the site, instantiate and precompile there
 simlaunch prepare s1 --site trillium --spec jobs/s1-sweep.toml
-# on Symmetry and Nibi the login node is another CPU: prepare submits a
+# on Nibi the login node is another CPU: prepare submits a
 # short precompile job and waits for it; interrupted, it continues when run again
 
 # show the batch script and the queue, without submitting
@@ -68,10 +73,33 @@ whose versions differ from the study's other prepared sites.
 
 On a site, a study's sources are in `<code>/<study>/` and its output in
 `<scratch>/<study>/`, where `<code>` and `<scratch>` come from the site's
-profile in [`sites/`](sites). Each run has a directory
+profile. Each run has a directory
 `<scratch>/<study>/<spec>-<label>/` holding its `simwatch.toml` and one
 directory per job, `001-<job ID>/`, which is made read-only when the job ends.
 The job's own log is `<scratch>/<study>/logs/<spec>-<job ID>.out`.
+
+## Sites
+
+A site is the laptop or a cluster, described by a profile, a TOML file.
+`simlaunch sites` lists them. The profile `local` works as it is. Profiles
+of Trillium, Nibi and Fir come with SimLaunch; they need your account and
+your directories, in a file of your own:
+
+```toml
+# ~/.config/simlaunch/sites/trillium.toml
+base = "trillium"                   # everything else comes from SimLaunch's profile
+
+[paths]
+code = "/home/USER/simlaunch/studies"
+scratch = "/scratch/USER/simlaunch/studies"
+
+[slurm]
+account = "def-NAME"
+```
+
+A profile for another cluster goes into the same directory.
+[`SITES.md`](SITES.md) is the reference: where profiles are looked for,
+every key, and how to write a profile for a new cluster.
 
 ## Job specs
 
@@ -100,7 +128,7 @@ A GPU job asks for GPUs instead of a node, and names the environment that
 adds the device package:
 
 ```toml
-[site.symmetry]
+[site.nibi]
 time = "1:00:00"
 resources = { gpus = 1 }
 env = "cuda"                        # the project and CUDA.jl, written by prepare
@@ -149,7 +177,7 @@ them.
 ```bash
 simlaunch wait s1 jobs/s1-sweep.toml --site trillium   # until its jobs have ended; fails unless all runs finished
 simlaunch status s1                 # one table of the study's runs on all its sites
-simlaunch fetch s1                  # results into <project>/.claude/data/s1/<site>/
+simlaunch fetch s1                  # results into <project>/simlaunch-data/s1/<site>/; --to names another place
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
 simlaunch after s1 jobs/s1-sweep.toml --site trillium   # the spec's [after] command again
 simlaunch cancel s1 jobs/s1-sweep.toml --site trillium --message "superseded"   # cancels its jobs, marks its runs cancelled
@@ -192,8 +220,8 @@ simlaunch check-restart s2 jobs/short.toml --site trillium     # does the driver
 ```
 
 The driver must write each checkpoint under a temporary name (`*.tmp`) and
-rename it when it is whole. On a pre-emptible queue (Symmetry's `h200preq`,
-which a GPU job with checkpoints gets) a stopped job submits its successor
+rename it when it is whole. On a pre-emptible queue (one that a
+profile marks with `preempt`) a stopped job submits its successor
 itself; to end such a chain, create the file `STOP` in the study's output
 directory and cancel the job. `check-restart` runs a spec once in one job
 and once stopped and continued, and passes when the stopped job's directory
@@ -204,36 +232,3 @@ that still appends to its old output runs with `mutable_restarts = true`
 ## Design
 
 [`PLAN.md`](PLAN.md) has the design, its reasons and the plan.
-
-### What has run where
-
-Milestones 1 to 3 of the plan's four are implemented.
-
-- Run on clusters:
-  - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
-    side, a pinned thread scan of TreeWaveOLDG, 1 to 192 threads, and,
-    with a toy project, MPI ranks on one and two nodes under MPICH_jll and
-    under the system's Open MPI, each rank on its NUMA domain.
-  - `fir`: S1's sweep from the same spec, with the same results, and the
-    octant row below on one H100, after a precompile job on a GPU node.
-  - `nibi`: S1's sweep from the same spec, with the same results, after a
-    precompile job on a compute node.
-  - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
-    `cuda` environment.
-  - `symmetry`: the same row on one H200, after a precompile job on an H200
-    node; TreeWaveOLDG's thread scan on an AMD node; and, with a toy
-    project, a chain of three jobs, `check-restart`, a stopped job that
-    submits its successor, and MPI ranks on one and two nodes under three
-    recipes, each rank on its NUMA domain; two MPI ranks with one H200
-    each, under MPICH_jll and under HPC-X with device buffers; and TreeAMR's
-    nested benchmark for two variants on one node.
-  - `local`: the one run of S1's sweep that fits into the laptop's memory.
-- Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
-  `scancel`: a precompile lock that is held or stale, a pre-empted job that
-  submits its successor, and Nibi's GPU jobs.
-- Run on the laptop by hand: two versions of a package in one job, with MPI
-  ranks under MPICH_jll's `mpiexec`.
-- Not yet run with a real code: restart chains. A real pre-emption
-  has not happened, only its signal.
-- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
-  refused for; the memory part of the resource check; `--snapshot-pins`.

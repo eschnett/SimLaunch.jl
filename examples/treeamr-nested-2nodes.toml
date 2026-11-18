@@ -1,15 +1,16 @@
 # TreeAMR's nested-mesh ghost fill (`bench/nested.jl`) for two versions of the
-# package in one job, as `bench/symmetry_nested.sh` runs it: one rank per
+# package in one job, as TreeAMR's own batch script ran it: one rank per
 # NUMA domain, under two MPI recipes. Take the snapshot with the baseline as
 # a variant:
 #
 #     simlaunch snapshot ~/src/jl/TreeAMR --study nested1 --variant base=<baseline checkout>
 #
 # Both versions run the study's own `bench/nested.jl`; they differ in the
-# package only. Written for Symmetry's 64-core nodes with 8 NUMA domains.
-# Two nodes: 16 ranks, 8 on each.
+# package only. Written for Nibi's 192-core nodes with 6 NUMA domains of 32 cores;
+# not yet run there.
+# Two nodes: 12 ranks, 6 on each.
 name = "nested2"
-site = "symmetry"
+site = "nibi"
 time = "0:30:00"
 resources = { nodes = 2 }
 env = "test"                        # the benchmark needs the test dependencies
@@ -20,23 +21,23 @@ vars = { TREEAMR_BENCH_N = "16" }
 cmd = 'for d in $SIMLAUNCH_JOBDIRS; do echo "== $d"; grep -E "^T.*fill" "$d/output.log"; done'
 
 [[run]]
-label = "base-16x8"
+label = "base-12x32"
 variant = "base"
 cmd = "bench/nested.jl mpi"
 mpi = "jll"
-ranks = 16
-threads = 8
+ranks = 12
+threads = 32
 
 [[run]]
-label = "new-16x8"
+label = "new-12x32"
 cmd = "bench/nested.jl mpi"
 mpi = "jll"
-ranks = 16
-threads = 8
+ranks = 12
+threads = 32
 
 [[run]]
-label = "new-16x8-system"
+label = "new-12x32-system"
 cmd = "bench/nested.jl mpi"
 mpi = "system"
-ranks = 16
-threads = 8
+ranks = 12
+threads = 32

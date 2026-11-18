@@ -1,6 +1,6 @@
 # Trillium's GPU cluster (Alliance / SciNet): a Slurm cluster of its own,
-# with its own login node. Facts from the trillium-hpc skill, checked on the
-# cluster on 2026-11-15.
+# with its own login node.
+# Checked on the cluster on 2026-11-15.
 name = "trillium-gpu"
 
 [connect]
@@ -9,13 +9,15 @@ via = "trig-login01"                   # commands run here, reached from a tri-l
 check = "ssh -O check trillium"        # MFA: never open a new connection
 hint = "run: ssh -fN trillium"
 
+# The entries in <...> are yours to give, in a profile of your own that starts
+# with `base = "trillium-gpu"`: see SITES.md.
 [paths]
 # not the CPU cluster's directories: the two prepare for different CPUs
-code = "/home/eschnett/claude/studies-gpu"          # read-only in jobs
-scratch = "/scratch/eschnett/claude/studies-gpu"
+code = "<a directory for the studies' sources, such as /home/USER/simlaunch/studies-gpu>"          # read-only in jobs
+scratch = "<a directory for the runs' output, such as /scratch/USER/simlaunch/studies-gpu>"
 
 [slurm]
-account = "def-eschnett"
+account = "<your Slurm account, such as def-NAME>"
 export_env = false                     # sbatch runs with --export=NONE
 
 [slurm.gpu]                            # H100, 80 GB
@@ -46,14 +48,14 @@ default = "system"                     # for a run that names no recipe
 # side, which shares its home. Under the wrapper's mpiexec: srun is not for a GPU job.
 # Two ranks on an H100 exchanged host and device buffers on 2026-11-17 (job 1355034).
 [mpi.system]
-julia = "~/claude/julia-1.13.4-trillium/bin/julia"   # juliaup's Julia cannot load the site's MPI
+julia = "<a Julia that can load the cluster's MPI: a copy patched with setrpaths.sh>"   # juliaup's Julia cannot load the site's MPI
 modules = ["StdEnv/2023", "cuda/12.9"]   # StdEnv sets the OMPI_MCA variables that keep Open MPI off libfabric; cuda swaps in the UCX that knows device memory
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
 env = { OMP_NUM_THREADS = "1" }
 [mpi.system.preferences]
-library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
-mpiexec = "/home/eschnett/claude/openmpi-4.1.5-mpi-abi/bin/mpiexec"
+library_names = ["<your build of mpi_abi_wrapper: .../lib64/libmpi_abi.so>"]
+mpiexec = "<your build of mpi_abi_wrapper: .../bin/mpiexec>"
 abi = "MPIABI"
 
 [env]

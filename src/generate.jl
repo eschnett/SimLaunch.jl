@@ -85,7 +85,7 @@ function run_command(job::Job, r::Run)
     julia = julia_text(site, r.mpi)
     envdir = "\"\$CODE\"/" * q(r.envdir)
     # A step under srun has its own shape. Without the job's SLURM_CPUS_PER_TASK, srun does not warn that a
-    # step with fewer and wider tasks "may never run" (Slurm 21.08 on Symmetry, job 601766: it runs the same).
+    # step with fewer and wider tasks "may never run" (Slurm 21.08: it runs the same).
     srun = r.ranks > 0 ? site.mpi[r.mpi].launcher == "srun" : job.pin
     words = String[]
     if srun || !isempty(r.vars)

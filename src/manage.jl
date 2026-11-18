@@ -5,7 +5,7 @@ function study_sites(study; site = nothing)
     load_snapshot(study)
     site === nothing || return [load_site(site)]
     dir = manifest_store(study)
-    names = isdir(dir) ? filter(n -> isfile(joinpath(sites_dir(), n * ".toml")), readdir(dir)) : String[]
+    names = isdir(dir) ? filter(n -> !isempty(site_files(n)), readdir(dir)) : String[]
     isempty(names) && fail("study $study is not prepared on any site; give --site")
     return load_site.(names)
 end
@@ -74,14 +74,14 @@ end
 """
     fetch(study; site = nothing, runs = [], with_checkpoints = false, max_size = "100M", to = nothing)
 
-Copy the study's results from its sites to `.claude/data/<study>/<site>/` in
+Copy the study's results from its sites to `simlaunch-data/<study>/<site>/` in
 the project the study came from (or to `to`). Checkpoints and files above
 `max_size` stay on the site. Returns the directories written.
 """
 function fetch(study::AbstractString; site = nothing, runs = String[], with_checkpoints::Bool = false,
                max_size = "100M", to = nothing, io::IO = stdout)
     snap = load_snapshot(study)
-    root = to === nothing ? joinpath(project_home(snap), ".claude", "data", study) : abspath(expanduser(to))
+    root = to === nothing ? joinpath(project_home(snap), "simlaunch-data", study) : abspath(expanduser(to))
     to === nothing && !isdir(project_home(snap)) &&
         fail("the project of study $study was at $(project_home(snap)), which is gone; give --to <directory>")
     occursin(r"^\d+[KMG]?$", max_size) || fail("--max-size is a number and K, M or G: $(repr(max_size))")

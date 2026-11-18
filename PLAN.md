@@ -23,6 +23,7 @@ placement describe what milestones 3 and 4 will build.
 - [Implementation](#implementation)
 - [Migrating the existing scripts](#migrating-the-existing-scripts)
 - [Non-goals](#non-goals)
+- [What has run where](#what-has-run-where)
 - [Plan and open questions](#plan-and-open-questions)
 
 ## Summary
@@ -33,6 +34,12 @@ project from the laptop to any of six sites and back: `local`, `symmetry`,
 of every modified package, instantiates and precompiles in the right place,
 generates the batch script from a short job spec and a site profile, submits
 it with SimWatch, and fetches the results.
+
+Symmetry is Perimeter Institute's cluster and is not public. Its profile is
+not part of SimLaunch: it is with its users, in
+`~/.config/simlaunch/sites/symmetry.toml`. This plan names it because much of
+SimLaunch was first tried there; the profiles in `sites/` and the examples
+are for public clusters.
 
 The tool runs on the laptop only. On the clusters it leaves plain files: a
 source tree, a bash batch script and an output directory. Nothing of its own
@@ -145,7 +152,7 @@ on each site                                ▼                                 
                                         no network needed after)     allocation)
                                                                               │
                                                                               ▼
-  results in .claude/data/<study>/<site>/<run>/ ◀──────fetch───────── runs (a scratch
+  results in simlaunch-data/<study>/<site>/<run>/ ◀────fetch───────── runs (a scratch
                                                                        directory each,
                                                                        SimWatch, logs)
 ```
@@ -159,9 +166,25 @@ project.
 
 ## Site profiles
 
-Each site is one TOML file in SimLaunch's repository, `sites/<name>.toml`, and
-it is the single place a cluster fact is written down. The skills then point
-at the profiles instead of repeating them.
+Each site is one TOML file, `<name>.toml`, and it is the single place a
+cluster fact is written down. The skills then point at the profiles instead
+of repeating them. [`SITES.md`](SITES.md) is the reference for every key.
+
+Profiles are in two places. Those of public clusters come with SimLaunch, in
+`sites/`, and describe the cluster only: what a user alone knows (the
+account, the directories, a build of the cluster's MPI) is a placeholder
+there, a string in `<...>`, and a site with a placeholder is refused by
+name. A user's own profiles are in `~/.config/simlaunch/sites/` (or
+`$SIMLAUNCH_SITES`) and come first. A profile with `base = "<name>"` holds
+only what differs from that profile, so a user's `trillium.toml` is a few
+lines on top of SimLaunch's. Until 0.1.0 all profiles were in the
+repository, with one user's account and directories in them; a registered
+package cannot work that way, since its `sites/` is replaced by every
+update. A cluster that is not public has its profile with its users only;
+the tests use a made-up cluster, `test/sites/kepler.toml`, for what the
+public profiles do not cover.
+
+The profile below is the two files merged, as one user sees it.
 
 A profile has six tables. `[connect]` says how to reach the site and how to
 check first; `[paths]` where code and output go; `[slurm]` the account and the
@@ -178,11 +201,11 @@ check = "ssh -O check trillium"      # MFA: never open a new connection
 hint = "run: ssh -fN trillium"
 
 [paths]
-code = "/home/eschnett/claude/studies"     # read-only in jobs
-scratch = "/scratch/eschnett/claude/studies"
+code = "/home/USER/simlaunch/studies"     # read-only in jobs
+scratch = "/scratch/USER/simlaunch/studies"
 
 [slurm]
-account = "def-eschnett"
+account = "def-NAME"
 export_env = false                     # sbatch runs with --export=NONE
 node = { cores = 192, numa = 8, mem = "767000M", whole = true }
 queues = [                             # in the order of preference
@@ -197,12 +220,12 @@ modules = []                           # a pure Julia job needs none
 compute_internet = false               # prepare fetches everything; jobs run offline
 
 [mpi.system]                           # Open MPI 4.1.5 through mpi_abi_wrapper
-julia = "~/claude/julia-1.13.4-trillium/bin/julia"   # setrpaths-patched: juliaup's cannot load it
+julia = "~/julia-1.13.4-trillium/bin/julia"   # setrpaths-patched: juliaup's cannot load it
 modules = ["StdEnv/2023"]
 launcher = "srun"
 launcher_args = ["--mpi=pmix"]
 [mpi.system.preferences]               # the keywords of MPIPreferences.use_system_binary
-library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
+library_names = ["/home/USER/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
 abi = "MPIABI"
 
 [env]
@@ -834,17 +857,19 @@ holds no session open: interrupted, it is started again. This is also how a
 spec runs in a project's CI, as `--site local`.
 
 **Fetch** copies a run's results back to
-`.claude/data/<study>/<site>/<run>/` in the project the study came from:
+`simlaunch-data/<study>/<site>/<run>/` in the project the study came from
+(until 0.1.0 `.claude/data/…`, which only suits a project driven by an agent):
 logs, CSVs, `records.csv`, `simwatch.toml`, plots, `snapshot.toml` and the
 site's resolved manifests. The site is part of the path, so the same spec run
 on two sites never lands in one directory. Checkpoints (`ck/`) stay on the
 cluster unless `--with-checkpoints` is given, and so do files above
 `--max-size` (100 MB by default). The copied files are read-only, as on the
 site; their directories are writable, so that a later fetch can add to them.
-`--to` names another directory, and `--run` single runs. The
-analysis scripts that read `.claude/data` (`test/aligned_study.jl`,
+`--to` names another directory, and `--run` single runs. A snapshot leaves
+`simlaunch-data/` out, and a project keeps it out of git. The analysis
+scripts that read `.claude/data` (`test/aligned_study.jl`,
 `test/harmonic_spin_study.jl` and the rest) read a run's directory as they
-do now.
+do now, from the new place or through `--to .claude/data/<study>`.
 
 A run with checkpoints comes back as its job directories, unchanged, with its
 `combined-<n>/` directories beside them. An analysis script that wants one
@@ -1034,7 +1059,7 @@ simlaunch submit s1 jobs/s1-sweep.toml --site trillium
 # one table across sites
 simlaunch status s1
 
-# copy results into .claude/data/s1/trillium/
+# copy results into simlaunch-data/s1/trillium/
 simlaunch fetch s1
 ```
 
@@ -1144,6 +1169,40 @@ computes. Explicitly out of scope:
   commit-status post. Those stay explicit, asked-for steps.
 - **Hiding the cluster.** `--dry-run` shows every script, and a job can always
   be submitted by hand from the study's `jobs/` directory.
+
+## What has run where
+
+Milestones 1 to 3 of the plan's four are implemented.
+
+- Run on clusters:
+  - `trillium` (CPU): step S1's sweep of XCTS-harmonic, six runs side by
+    side, a pinned thread scan of TreeWaveOLDG, 1 to 192 threads, and,
+    with a toy project, MPI ranks on one and two nodes under MPICH_jll and
+    under the system's Open MPI, each rank on its NUMA domain.
+  - `fir`: S1's sweep from the same spec, with the same results, and the
+    octant row below on one H100, after a precompile job on a GPU node.
+  - `nibi`: S1's sweep from the same spec, with the same results, after a
+    precompile job on a compute node.
+  - `trillium-gpu`: a TreeGeneralizedHarmonic octant row on one H100, in the
+    `cuda` environment.
+  - `symmetry` (not a public cluster; its profile is not part of
+    SimLaunch): the same row on one H200, after a precompile job on an H200
+    node; TreeWaveOLDG's thread scan on an AMD node; and, with a toy
+    project, a chain of three jobs, `check-restart`, a stopped job that
+    submits its successor, and MPI ranks on one and two nodes under three
+    recipes, each rank on its NUMA domain; two MPI ranks with one H200
+    each, under MPICH_jll and under HPC-X with device buffers; and TreeAMR's
+    nested benchmark for two variants on one node.
+  - `local`: the one run of S1's sweep that fits into the laptop's memory.
+- Tested on the laptop only, with stand-ins for `sbatch`, `squeue` and
+  `scancel`: a precompile lock that is held or stale, a pre-empted job that
+  submits its successor, and Nibi's GPU jobs.
+- Run on the laptop by hand: two versions of a package in one job, with MPI
+  ranks under MPICH_jll's `mpiexec`.
+- Not yet run with a real code: restart chains. A real pre-emption
+  has not happened, only its signal.
+- Not yet: a run's own Julia version (`julia = "+1.13"`), which a spec is
+  refused for; the memory part of the resource check; `--snapshot-pins`.
 
 ## Plan and open questions
 

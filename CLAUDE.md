@@ -16,6 +16,8 @@ Which file new content goes in:
 - `README.md`: for users. What it does, installation, an example, the status.
 - `SPEC.md`: for users. The reference for every key of a job spec. A new or
   changed key is described there.
+- `SITES.md`: for users. The reference for every key of a site profile, and
+  where profiles are looked for.
 - `CONVERTING.md`: for another project's maintainer or agent. How a
   hand-written batch script becomes a spec, and what does not carry over.
 - `CLAUDE.md`: this file. Commands, rules, repository facts. Keep it short.
@@ -36,7 +38,7 @@ julia --project=. -m SimLaunch submit <study> <spec> --site trillium --dry-run
 ```
 
 `SIMLAUNCH_CACHE` and `SIMLAUNCH_SITES` move the snapshot cache and the
-profile directory; the tests use both.
+user's profile directory (`~/.config/simlaunch/sites`); the tests use both.
 
 ## Conventions and sharp edges
 
@@ -76,7 +78,16 @@ profile directory; the tests use both.
 - Cancel a SimLaunch job with `simlaunch cancel <study> <spec>`, not with a
   plain `scancel`, which leaves a queued run `queued` and SimWatch showing
   it as lost. Ask Erik first, as for a job.
-- Cluster facts live in `sites/*.toml`. On a cluster, follow that cluster's
+- Cluster facts live in the profiles. `sites/*.toml` holds public clusters
+  only, with nothing of a user in them: an account, a user's directory or a
+  build of MPI is a placeholder `<...>` there, and the value goes into the
+  user's own profile, `~/.config/simlaunch/sites/<name>.toml` with
+  `base = "<name>"`. Erik's are there. Symmetry is not a public
+  cluster: its whole profile is there too, never in `sites/`. Its name may
+  appear (`PLAN.md` keeps its history); the tests use the made-up
+  `test/sites/kepler.toml`, and examples and documentation use Nibi. No
+  cluster user name, account or home directory goes into a profile in
+  `sites/`, a test or an example. On a cluster, follow that cluster's
   skill: check the connection first, and never open one that needs MFA.
 - Submitting a job, or anything else on a cluster, is visible to others: ask
   Erik first, each time.

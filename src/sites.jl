@@ -27,6 +27,7 @@ struct MPIRecipe
     julia_bin::Union{String,Nothing}  # a Julia that can load the site's MPI
     preferences::Dict{String,Any}     # for MPIPreferences.use_system_binary
     env::Dict{String,String}
+    unset::Vector{String}             # its keys that still hold a placeholder: not usable until they are set
 end
 
 "What a GPU job is given on a site, per GPU."
@@ -126,11 +127,67 @@ function read_archs(conf, file; cpu_nodes::Bool, gpu_nodes::Bool)
     return archs, cpu, something(gpu, cpu), login
 end
 
+"The files that hold a profile of this name, the user's first."
+site_files(name) = [f for f in (joinpath(d, name * ".toml") for d in sites_dirs()) if isfile(f)]
+
+"Put the tables of `over` on top of `under`: a table is merged key by key, anything else replaces."
+function merge_tables!(under::AbstractDict, over::AbstractDict)
+    for (k, v) in over
+        if v isa AbstractDict && get(under, k, nothing) isa AbstractDict
+            merge_tables!(under[k], v)
+        else
+            under[k] = v
+        end
+    end
+    return under
+end
+
+"""
+The tables of a profile, and the files they come from. The first file of
+that name counts: the user's, else the package's. A profile that names a
+`base` holds only what differs from that profile; the base is looked up in
+the same way, leaving out the files that are in use already, so that a
+user's `trillium.toml` can build on the package's.
+"""
+function read_profile(name, used = String[])
+    files = filter(!in(used), site_files(name))
+    isempty(files) && return nothing
+    file = files[1]
+    conf = TOML.parsefile(file)
+    base = pop!(conf, "base", nothing)
+    base === nothing && return conf, [file]
+    base isa AbstractString && occursin(NAME_RE, base) || fail("$file: `base` names another profile, not $(repr(base))")
+    under = read_profile(base, [used; file])
+    under === nothing && fail("$file: no profile for its base $(repr(base)); known sites: ", join(known_sites(), ", "))
+    delete!(under[1], "name")
+    return merge_tables!(under[1], conf), [file; under[2]]
+end
+
+"""
+The keys of a profile that still hold a placeholder, a string `<...>`: what
+the package's profile of a public cluster cannot know, such as the account.
+"""
+function placeholders(value, key = "")
+    value isa AbstractDict &&
+        return reduce(vcat, [placeholders(v, isempty(key) ? k : "$key.$k") for (k, v) in value]; init = String[])
+    value isa AbstractVector && return reduce(vcat, [placeholders(v, key) for v in value]; init = String[])
+    return value isa AbstractString && occursin(r"^<.*>$", value) ? ["`$key` ($(value[2:end-1]))"] : String[]
+end
+
 function load_site(name::AbstractString)
     checkname("a site name", name)
-    file = joinpath(sites_dir(), name * ".toml")
-    isfile(file) || fail("no profile for site $(repr(name)) ($file); known sites: ", join(known_sites(), ", "))
-    conf = TOML.parsefile(file)
+    found = read_profile(name)
+    found === nothing &&
+        fail("no profile for site $(repr(name)) in ", join(sites_dirs(), " or "), "; known sites: ", join(known_sites(), ", "))
+    conf, files = found
+    file = files[1]
+    # an MPI recipe's are reported when a run asks for the recipe
+    unset = placeholders(Dict{String,Any}(k => v for (k, v) in conf if k != "mpi"))
+    if !isempty(unset)
+        own = joinpath(user_sites_dir(), name * ".toml")
+        fail("site $name: its profile leaves these to you: ", join(sort!(unset), ", "), ". Set them in $own",
+             own in files ? "" : ", a file that starts with `base = $(repr(name))` (see SITES.md)")
+    end
     for key in keys(conf)
         key in SITE_TABLES || fail("$file: unknown key $(repr(key))")
     end
@@ -243,7 +300,8 @@ function read_recipes(tables, file)
                                   get(t, "multi_node", launcher == "srun"),
                                   collect(String, get(t, "modules", String[])), get(t, "julia", nothing),
                                   Dict{String,Any}(get(t, "preferences", Dict{String,Any}())),
-                                  Dict{String,String}(k => string(v) for (k, v) in get(t, "env", Dict{String,Any}())))
+                                  Dict{String,String}(k => string(v) for (k, v) in get(t, "env", Dict{String,Any}())),
+                                  placeholders(t, "mpi.$name"))
     end
     default = get(tables, "default", nothing)
     default === nothing || (default isa AbstractString && haskey(recipes, default)) ||
@@ -314,7 +372,7 @@ precompile_where(site::Site, gpu::Bool) = precompile_where(site, site_arch(site,
 "`JULIA_CPU_TARGET` for the site's CPU or GPU nodes; empty: Julia's default, the node's own CPU."
 cpu_target(site::Site, gpu::Bool) = site.archs[site_arch(site, gpu)]
 
-known_sites() = sort!([splitext(f)[1] for f in readdir(sites_dir()) if endswith(f, ".toml")])
+known_sites() = sort!(unique!([splitext(f)[1] for d in sites_dirs() if isdir(d) for f in readdir(d) if endswith(f, ".toml")]))
 
 # Shell text
 

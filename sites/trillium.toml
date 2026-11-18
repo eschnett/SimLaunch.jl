@@ -1,5 +1,5 @@
-# Trillium's CPU cluster (Alliance / SciNet). Facts from the trillium-hpc
-# skill, checked on the cluster on 2026-11-15.
+# Trillium's CPU cluster (Alliance / SciNet).
+# Checked on the cluster on 2026-11-15.
 name = "trillium"
 
 [connect]
@@ -7,12 +7,14 @@ host = "trillium"
 check = "ssh -O check trillium"      # MFA: never open a new connection
 hint = "run: ssh -fN trillium"
 
+# The entries in <...> are yours to give, in a profile of your own that starts
+# with `base = "trillium"`: see SITES.md.
 [paths]
-code = "/home/eschnett/claude/studies"       # read-only in jobs
-scratch = "/scratch/eschnett/claude/studies"
+code = "<a directory for the studies' sources, such as /home/USER/simlaunch/studies>"       # read-only in jobs
+scratch = "<a directory for the runs' output, such as /scratch/USER/simlaunch/studies>"
 
 [slurm]
-account = "def-eschnett"
+account = "<your Slurm account, such as def-NAME>"
 export_env = false                     # sbatch runs with --export=NONE
 node = { cores = 192, numa = 8, mem = "767000M", whole = true }
 queues = [                             # in the order of preference
@@ -28,7 +30,7 @@ precompile_tasks = 8                   # login nodes are shared
 compute_internet = false               # prepare fetches everything; jobs run offline
 
 [mpi]
-default = "system"                     # for a run that names no recipe
+default = "jll"                        # for a run that names no recipe; `system` is faster once it is set up
 
 [mpi.jll]                              # MPICH_jll: six times slower between nodes than the system's
 launcher = "srun"
@@ -38,14 +40,14 @@ env = { OMP_NUM_THREADS = "1" }
 # Open MPI 4.1.5 of StdEnv/2023 through mpi_abi_wrapper. juliaup's Julia cannot
 # load it; the patched one can. Both recipes ran on one and two nodes on 2026-11-16.
 [mpi.system]
-julia = "~/claude/julia-1.13.4-trillium/bin/julia"
+julia = "<a Julia that can load the cluster's MPI: a copy patched with setrpaths.sh>"
 modules = ["StdEnv/2023"]              # also sets the OMPI_MCA variables that keep Open MPI off libfabric
 launcher = "srun"
 launcher_args = ["--mpi=pmix"]
 env = { OMP_NUM_THREADS = "1" }
 [mpi.system.preferences]
-library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
-mpiexec = "/home/eschnett/claude/openmpi-4.1.5-mpi-abi/bin/mpiexec"
+library_names = ["<your build of mpi_abi_wrapper: .../lib64/libmpi_abi.so>"]
+mpiexec = "<your build of mpi_abi_wrapper: .../bin/mpiexec>"
 abi = "MPIABI"
 
 [env]

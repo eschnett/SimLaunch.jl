@@ -16,7 +16,7 @@ walltime = "walltime"
 margin = "0:10:00"
 continue_code = 3
 
-[site.symmetry]                     # one H200; with checkpoints the queue is h200preq
+[site.nibi]                         # one H100
 time = "4:00:00"
 resources = { gpus = 1 }
 env = "cuda"

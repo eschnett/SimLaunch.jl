@@ -1,5 +1,5 @@
-# Nibi (Alliance / SHARCNET). Facts from the nibi-hpc skill, checked on the
-# cluster on 2026-10-19.
+# Nibi (Alliance / SHARCNET).
+# Checked on the cluster on 2026-10-19.
 name = "nibi"
 
 [connect]
@@ -7,12 +7,14 @@ host = "nibi"
 check = "ssh -O check nibi"            # MFA: never open a new connection
 hint = "run: ssh -fN nibi"
 
+# The entries in <...> are yours to give, in a profile of your own that starts
+# with `base = "nibi"`: see SITES.md.
 [paths]
-code = "/home/eschnett/claude/studies"
-scratch = "/scratch/eschnett/claude/studies"
+code = "<a directory for the studies' sources, such as /home/USER/simlaunch/studies>"
+scratch = "<a directory for the runs' output, such as /scratch/USER/simlaunch/studies>"
 
 [slurm]
-account = "def-eschnett"
+account = "<your Slurm account, such as def-NAME>"
 partition = false                      # the submit filter chooses, by time and size
 max_time = "7-00:00:00"                # shorter starts sooner: 3 h, 12 h, 24 h, 3 d, 7 d bins
 node = { cores = 192, numa = 6, mem = "766000M", header = ["--exclusive", "--mem=0"] }
@@ -38,7 +40,7 @@ precompile_time = "0:30:00"
 compute_internet = true
 
 [mpi]
-default = "system"                     # for a run that names no recipe
+default = "jll"                        # for a run that names no recipe; `system` is faster once it is set up
 
 [mpi.jll]                              # MPICH_jll: much slower between nodes than the system's
 launcher = "srun"
@@ -48,12 +50,12 @@ env = { OMP_NUM_THREADS = "1" }
 # Open MPI 4.1.5 of StdEnv/2023 through mpi_abi_wrapper. juliaup's Julia cannot
 # load it; the patched one can. Four ranks ran on one node on 2026-11-17 (job 27652961).
 [mpi.system]
-julia = "~/claude/julia-1.13.4-nibi/bin/julia"
+julia = "<a Julia that can load the cluster's MPI: a copy patched with setrpaths.sh>"
 modules = ["StdEnv/2023"]              # also sets the OMPI_MCA variables that keep Open MPI off libfabric
 launcher = "srun"
 launcher_args = ["--mpi=pmix"]
 env = { OMP_NUM_THREADS = "1" }
 [mpi.system.preferences]
-library_names = ["/home/eschnett/claude/openmpi-4.1.5-mpi-abi/lib64/libmpi_abi.so"]
-mpiexec = "/home/eschnett/claude/openmpi-4.1.5-mpi-abi/bin/mpiexec"
+library_names = ["<your build of mpi_abi_wrapper: .../lib64/libmpi_abi.so>"]
+mpiexec = "<your build of mpi_abi_wrapper: .../bin/mpiexec>"
 abi = "MPIABI"

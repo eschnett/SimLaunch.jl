@@ -116,8 +116,7 @@ function prepare_script(site::Site, study, needed)
         end
         packages = unique!(reduce(vcat, [ENV_KINDS[k].packages for k in kinds]))
         # An environment whose caches a compute node compiled is left as it is: writing it again makes
-        # this node compile MPIPreferences anew, and the caches that were built on it are then stale
-        # (Symmetry, job 600484).
+        # this node compile MPIPreferences anew, and the caches that were built on it are then stale.
         users = [u for u in needed if u.envdir == c.envdir]
         done = all(u -> precompile_where(site, u.arch) == "compute", users)
         if done
@@ -289,7 +288,7 @@ function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = st
         wait_job(site, jobid; what = "precompile job", poll, io)
         seconds = round(Int, time() - t0)
         left = missing_combos()
-        # the login node can see a file that a compute node wrote a minute late (NFS on Symmetry)
+        # the login node can see a file that a compute node wrote a minute late (NFS)
         for attempt in 1:12
             isempty(left) && break
             sleep(min(poll, 5))

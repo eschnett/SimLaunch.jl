@@ -336,6 +336,9 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                 fail("$where: site $(site.name) has no MPI recipe $(repr(recipe)); its recipes: ",
                      isempty(site.mpi) ? "none" : join(sort!(collect(keys(site.mpi))), ", "))
             rec = site.mpi[recipe]
+            isempty(rec.unset) ||
+                fail("$where: the MPI recipe $recipe of $(site.name) leaves these to you: ", join(sort(rec.unset), ", "),
+                     ". Set them in ", joinpath(user_sites_dir(), site.name * ".toml"), " (see SITES.md), or name another recipe")
             run_nodes > 1 && !rec.multi_node &&
                 fail("$where: the MPI recipe $recipe of $(site.name) starts its ranks on one node only")
             rec.launcher == "srun" && gpus > 0 &&

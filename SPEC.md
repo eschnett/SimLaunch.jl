@@ -33,7 +33,7 @@ cmd = "examples/harmonic_single.jl p=6"
 ```
 
 A key of a site table may also stand at the top level, as the default for
-every site. A spec written for one site names it, `site = "symmetry"`, has
+every site. A spec written for one site names it, `site = "nibi"`, has
 no site tables, and is refused elsewhere. A site without a table gets the
 defaults, and must then find `time` at the top level if it is a cluster.
 
@@ -91,8 +91,8 @@ a run without ranks that has `placement = "numa"`.
 A partition can mix node types. A benchmark names its node with `node`, or
 keeps off the nodes that differ with `sbatch_args = ["--exclude=cn099"]` or
 a `--constraint`. A site's profile can do the same for every job in a
-queue, and can mark a queue as taken only by name: on Symmetry, jobs in the
-AMD queues keep off cn112, which `queue = "largememq"` asks for. Which CPU a run got is in its `simlaunch-job.toml`.
+queue, and can mark a queue as taken only by name (`header` and `on_request`
+in [`SITES.md`](SITES.md)). Which CPU a run got is in its `simlaunch-job.toml`.
 
 ## Runs
 
@@ -148,7 +148,7 @@ threads = 8                         # per rank
 placement = "numa"                  # rank i of the 8 on its node: NUMA domain i of 8
 ```
 
-- `mpi` names a recipe in `sites/<site>.toml`, `[mpi.<recipe>]`: which MPI
+- `mpi` names a recipe in the site's profile, `[mpi.<recipe>]` (see [`SITES.md`](SITES.md)): which MPI
   binary, which launcher, which modules. Runs of one job may use different
   recipes.
 - A run with `ranks` that names no recipe gets the site's default (`default`
@@ -251,11 +251,11 @@ product, where the TOML would be the same table many times:
 
 ```julia
 runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi = m)
-        for v in ("v7", "v13"), g in (1, 2, 4), m in ("jll-fork", "system"), p in ("staged", "direct")
-        if !(m == "jll-fork" && p == "direct")]
+        for v in ("v7", "v13"), g in (1, 2, 6), m in ("jll", "system"), p in ("staged", "direct")
+        if !(m == "jll" && p == "direct")]
 
-(name = "nested-gpu",
- site = Dict("symmetry" => (time = "1:00:00", resources = (gpus = 4,), env = "cuda")),
+(name = "nested",
+ site = Dict("nibi" => (time = "1:00:00", resources = (nodes = 1,), env = "test")),
  run = runs)
 ```
 

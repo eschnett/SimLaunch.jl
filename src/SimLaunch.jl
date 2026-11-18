@@ -19,8 +19,11 @@ fail(msg...) = throw(UserError(string(msg...)))
 "Where snapshots are kept on the laptop."
 cache_root() = get(ENV, "SIMLAUNCH_CACHE", joinpath(homedir(), ".cache", "simlaunch"))
 
-"Where the site profiles are."
-sites_dir() = get(ENV, "SIMLAUNCH_SITES", joinpath(PKGROOT, "sites"))
+"Where the user's own site profiles are."
+user_sites_dir() = get(ENV, "SIMLAUNCH_SITES", joinpath(homedir(), ".config", "simlaunch", "sites"))
+
+"The directories that hold site profiles, in the order they are searched: the user's, then the package's."
+sites_dirs() = [user_sites_dir(), joinpath(PKGROOT, "sites")]
 
 const NAME_RE = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 

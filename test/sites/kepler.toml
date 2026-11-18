@@ -1,15 +1,16 @@
-# Symmetry (Perimeter Institute): AMD CPU nodes and two H200 nodes. Facts
-# from the symmetry-hpc skill (partitions checked there on 2026-10-14).
-name = "symmetry"
+# A cluster that does not exist, for the tests: CPU nodes of two generations in
+# the same partitions, one odd node, GPU nodes, pre-emptible queues, and a
+# login node with another CPU.
+name = "kepler"
 
 [connect]
-host = "symmetry"                      # a tunnel that Erik opens
-check = "ssh -o BatchMode=yes -o ConnectTimeout=10 symmetry true"
-hint = "ask Erik to reopen the tunnel"
+host = "kepler"
+check = "ssh -o BatchMode=yes -o ConnectTimeout=10 kepler true"
+hint = "open the tunnel"
 
 [paths]
-code = "/home/eschnetter/claude/studies"
-scratch = "/mnt/beegfs/eschnetter/claude/studies"
+code = "/home/user/studies"
+scratch = "/scratch/user/studies"
 
 [slurm]
 # The AMD partitions hold Zen 2 and Zen 3 nodes (EPYC 7532, 7543), and cn112, which is
@@ -45,9 +46,9 @@ queues = [
 [arch]
 # One cache for the two AMD generations of the AMD partitions (EPYC 7532, 7543): Zen 2
 # code, which a Zen 3 node runs as well. Without a named target, what one generation
-# compiles is rejected on the other (jobs 599483, 599484, then with cn112).
+# compiles is rejected on the other.
 # No `generic` part: a node that cannot run Zen 2 code must refuse the cache, not
-# run it slowly, as the H200 nodes did with FastPower (jobs 601139, 601141).
+# run it slowly, as the H200 nodes did with FastPower.
 amd = "znver2"
 zen4c = "native"                       # cn112, in largememq: EPYC 8534P
 h200 = "native"                        # Sapphire Rapids: cn111 is a Xeon Gold 6442Y, cn113 a Platinum 8452Y
@@ -76,7 +77,7 @@ env = { HYDRA_LAUNCHER = "fork", MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE =
 
 # HPC-X's Open MPI 4.1.7, CUDA-aware, through mpi_abi_wrapper (MPI.jl's abi "MPIABI"),
 # under its own mpiexec: for CPU and for GPU jobs, on one node or several. Ran on an AMD
-# node and on an H200 with device buffers on 2026-11-17 (jobs 601884, 601886).
+# node and on an H200 with device buffers on 2026-11-17.
 [mpi.system]
 modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
@@ -84,8 +85,8 @@ launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its
 multi_node = true
 env = { OMP_NUM_THREADS = "1" }
 [mpi.system.preferences]
-library_names = ["/home/eschnetter/claude/hpcx-2.20-mpi-abi/lib/libmpi_abi.so"]
-mpiexec = "/home/eschnetter/claude/hpcx-2.20-mpi-abi/bin/mpiexec"
+library_names = ["/home/user/hpcx-2.20-mpi-abi/lib/libmpi_abi.so"]
+mpiexec = "/home/user/hpcx-2.20-mpi-abi/bin/mpiexec"
 abi = "MPIABI"
 
 # The same Open MPI loaded by MPI.jl itself, without the wrapper. Ran on CPU nodes and

@@ -23,7 +23,7 @@ const USAGE = """
           One table of the studies' runs on the sites they are prepared on.
       simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
                       [--max-size <size>] [--to <directory>]
-          Copy results to .claude/data/<study>/<site>/ in the study's project.
+          Copy results to simlaunch-data/<study>/<site>/ in the study's project, or to <directory>.
       simlaunch usage <study> [--site <site>] [--measure]
           What the study's runs hold on disk, as each job recorded it.
       simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
@@ -38,12 +38,14 @@ const USAGE = """
       simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...
           Test the spec's driver against the restart contract, with real jobs.
       simlaunch sites
-          List the site profiles.
+          List the site profiles and the files they come from.
       simlaunch studies
           List the studies in the cache.
 
     A spec is a TOML file, or a Julia file (.jl) whose last expression is the spec.
     Snapshots are kept in ~/.cache/simlaunch (or \$SIMLAUNCH_CACHE).
+    Your own site profiles are in ~/.config/simlaunch/sites (or \$SIMLAUNCH_SITES);
+    they come before the ones of the package. SITES.md describes them.
     """
 
 "Split arguments into positional ones and options. `flags` take no value; `multi` may repeat."
@@ -176,7 +178,10 @@ function command(args)
         length(pos) == 2 || fail("usage: simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...")
         check_restart(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[])) || return 1
     elseif cmd == "sites"
-        foreach(println, known_sites())
+        for name in known_sites()
+            found = read_profile(name)
+            println(rpad(name, 16), join(found[2], ", on top of "))
+        end
     elseif cmd == "studies"
         isdir(cache_root()) && foreach(println, sort!(filter(d -> isfile(joinpath(cache_root(), d, "snapshot.toml")),
                                                              readdir(cache_root()))))

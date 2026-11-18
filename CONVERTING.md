@@ -1,8 +1,8 @@
 # SimLaunch: converting a project's launch scripts
 
 How a hand-written batch script becomes a job spec. Written for someone, or
-an agent, working in the project that owns the script, such as TreeAMR's
-`bench/symmetry_*.sh`. [`SPEC.md`](SPEC.md) is the reference for every key.
+an agent, working in the project that owns the script, such as the batch
+scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every key.
 
 - [Before you start](#before-you-start)
 - [The steps](#the-steps)
@@ -19,8 +19,8 @@ an agent, working in the project that owns the script, such as TreeAMR's
   `bench/nested.jl` runs; it does not wrap or change it.
 - Specs live in the project, in `jobs/`, committed with it.
 - What has run on a cluster so far is short: see "What has run where" in
-  [`README.md`](README.md). MPI launchers, NUMA placement and jobs on
-  several nodes have run on Symmetry only, with a toy program. The first
+  [`PLAN.md`](PLAN.md#what-has-run-where). MPI launchers, NUMA placement and jobs on
+  several nodes have run on two clusters only, with a toy program. The first
   real script that needs one of them, or another site, is its first test:
   read the generated script (`--dry-run`) with care, and expect to fix the
   site's profile.
@@ -54,7 +54,7 @@ an agent, working in the project that owns the script, such as TreeAMR's
 | `#SBATCH --partition`, `--time`, `--nodes`, `--gres`, `--mem`, `--exclusive`, `--account` | `time` and `resources` in the site table. The partition is chosen by rule, or `queue`. Cores, memory, account and `--exclusive` come from the site's profile |
 | Any other `#SBATCH` line | `sbatch_args` |
 | `--nodelist` | `node` |
-| `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn099"]`. Symmetry's cn112 is excluded by the profile already |
+| `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn099"]`. A profile can exclude a node for every job of a queue |
 | A line that records the node and `lscpu`'s model | nothing: every job directory has a `simlaunch-job.toml` with them |
 | A setup stage: `Pkg.instantiate`, `Pkg.precompile`, building environments | `simlaunch prepare`, once per study and site. Nothing of it stays in the job |
 | An environment that copies `test/Project.toml` with the package's path made absolute | `env = "test"` |
