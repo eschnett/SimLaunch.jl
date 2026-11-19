@@ -13,8 +13,9 @@ const USAGE = """
     simlaunch: run Julia projects locally and on clusters
 
     Usage:
-      simlaunch snapshot <project> --study <study> [--rev <commit>] [--variant <name>=<directory>]...
+      simlaunch snapshot <project> --study <study> [--note <text>] [--rev <commit>] [--variant <name>=<directory>]...
           Copy the project and the packages it takes by path, as the study <study>.
+          --note says what the study is for: `list` shows it, and SimWatch shows it with its runs.
           --rev copies them as a commit of the project's repository holds them, not the working tree.
           A variant is another version of the project, for comparisons in one job.
       simlaunch prepare <study> --site <site> [--spec <spec.toml>]... [--run <label>]...
@@ -40,9 +41,17 @@ const USAGE = """
           --run names a run, <spec>-<label>, or a label, for that run of every spec.
       simlaunch usage <study> [--site <site>] [--measure]
           What the study's runs hold on disk, as each job recorded it.
-      simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
-          List what would be deleted on the site, and delete it after confirmation.
-          --run names a run, <spec>-<label>, or a label, for that run of every spec.
+      simlaunch list [--site <site>]... [--older-than <age>]
+          Every study on the laptop and the sites, oldest activity first: its runs, its disk, its note.
+          A study with a job queued or running is live. An age is 12h, 14d or 2w.
+      simlaunch delete <study>... | --older-than <age>  [--site <site>]...
+                       [--caches | --old-checkpoints | --checkpoints | --large [--max-size <size>]]
+                       [--run <run>]... [--yes]
+          List what would be deleted, site by site, and delete it after one confirmation.
+          Without a level, the whole study; without --site, on every site and the laptop's snapshot.
+          --caches: the compiled caches (prepare again before another job). --old-checkpoints: all
+          but each run's newest. --checkpoints: all. --large: files above --max-size (100M), which
+          fetch does not copy. --run narrows the last three to runs, <spec>-<label> or a label.
       simlaunch cancel <study> <spec.toml> --site <site> [--message <text>] [--poll <seconds>]
           Cancel the spec's jobs and mark its runs that have not ended as cancelled, for SimWatch.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
@@ -133,14 +142,15 @@ function command(args)
     if cmd in ("help", "--help", "-h")
         print(USAGE)
     elseif cmd == "snapshot"
-        pos, opt = parse_args(rest, ["study", "rev", "variant"]; multi = ["variant"])
-        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study> [--rev <commit>] [--variant <name>=<directory>]...")
+        pos, opt = parse_args(rest, ["study", "note", "rev", "variant"]; multi = ["variant"])
+        length(pos) == 1 || fail("usage: simlaunch snapshot <project> --study <study> [--note <text>] [--rev <commit>] [--variant <name>=<directory>]...")
         variants = map(get(opt, "variant", String[])) do v
             occursin('=', v) || fail("--variant takes <name>=<directory>: $(repr(v))")
             name, dir = split(v, '='; limit = 2)
             String(name) => String(dir)
         end
-        dest = snapshot(pos[1]; study = need(opt, "study"), rev = get(opt, "rev", nothing), variants)
+        dest = snapshot(pos[1]; study = need(opt, "study"), rev = get(opt, "rev", nothing), variants,
+                        note = get(opt, "note", ""))
         snap = load_snapshot(opt["study"])
         println("study $(opt["study"]): $(length(snap["package"])) packages in $dest")
         for p in snap["package"]
@@ -194,10 +204,20 @@ function command(args)
         length(pos) == 1 || fail("usage: simlaunch usage <study> [--site <site>] [--measure]")
         usage(pos[1]; site = get(opt, "site", nothing), measure = get(opt, "measure", false))
     elseif cmd == "clean"
-        pos, opt = parse_args(rest, ["site", "run"], ["old-checkpoints", "yes"]; multi = ["run"])
-        length(pos) == 1 || fail("usage: simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]")
-        clean(pos[1]; site = need(opt, "site"), old_checkpoints = get(opt, "old-checkpoints", false),
-              runs = get(opt, "run", String[]), yes = get(opt, "yes", false))
+        fail("`simlaunch clean` is now `simlaunch delete`; `simlaunch help` describes it")
+    elseif cmd == "list"
+        pos, opt = parse_args(rest, ["site", "older-than"]; multi = ["site"])
+        isempty(pos) || fail("usage: simlaunch list [--site <site>]... [--older-than <age>]")
+        list(; sites = get(opt, "site", String[]), older_than = get(opt, "older-than", nothing))
+    elseif cmd == "delete"
+        levels = ["caches", "old-checkpoints", "checkpoints", "large"]
+        pos, opt = parse_args(rest, ["site", "run", "older-than", "max-size"], [levels; "yes"]; multi = ["site", "run"])
+        chosen = filter(l -> haskey(opt, l), levels)
+        length(chosen) <= 1 || fail("give one level: ", join("--" .* chosen, " or "))
+        haskey(opt, "max-size") && chosen != ["large"] && fail("--max-size goes with --large")
+        delete(pos; sites = get(opt, "site", String[]), level = isempty(chosen) ? :all : Symbol(replace(only(chosen), '-' => '_')),
+               runs = get(opt, "run", String[]), max_size = get(opt, "max-size", "100M"),
+               older_than = get(opt, "older-than", nothing), yes = get(opt, "yes", false))
     elseif cmd == "cancel"
         pos, opt = parse_args(rest, ["site", "message", "poll"])
         length(pos) == 2 || fail("usage: simlaunch cancel <study> <spec.toml> --site <site> [--message <text>] [--poll <seconds>]")

@@ -170,6 +170,9 @@ function run_command(job::Job, r::Run)
     return join(words, " ")
 end
 
+"A string as a TOML value, quoted and escaped; nothing for an empty one."
+toml_value(text) = isempty(text) ? "" : chopprefix(chomp(sprint(TOML.print, Dict("x" => text))), "x = ")
+
 """
     generate(job; script = "") -> String
 
@@ -199,6 +202,7 @@ function generate(job::Job; script = "", successor = true)
 
           STUDY=$(q(job.study))
           SPEC=$(q(job.name))
+          DESCRIPTION=$(q(toml_value(job.description)))        # for SimWatch, as a TOML string; empty: none
           SITE=$(q(site.name))
           CODE=$(shpath(code))
           PROJECT=$(shpath(joinpath(code, "src", job.project)))

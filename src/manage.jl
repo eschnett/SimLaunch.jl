@@ -150,16 +150,18 @@ end
 "What the jobs of one run hold: the entries of its `diskusage.toml`."
 function usage_entries(text)
     t = try TOML.parse(text) catch; Dict{String,Any}() end
-    deleted = Dict{String,Int}()
+    # what `delete` removed later: checkpoints, and other files (`kb`)
+    gone_ck, gone = Dict{String,Int}(), Dict{String,Int}()
     for d in get(t, "deleted", [])
-        deleted[d["dir"]] = get(deleted, d["dir"], 0) + d["checkpoints_kb"]
+        ck = get(d, "checkpoints_kb", 0)
+        gone_ck[d["dir"]] = get(gone_ck, d["dir"], 0) + ck
+        gone[d["dir"]] = get(gone, d["dir"], 0) + ck + get(d, "kb", 0)
     end
     entries = NamedTuple[]
     for j in get(t, "job", [])
         kb, ck = j["kb"], j["checkpoints_kb"]
-        gone = get(deleted, j["dir"], 0)
-        push!(entries, (; dir = j["dir"], kb = kb isa Integer ? kb - gone : nothing,
-                        ck = ck isa Integer ? ck - gone : nothing))
+        push!(entries, (; dir = j["dir"], kb = kb isa Integer ? max(kb - get(gone, j["dir"], 0), 0) : nothing,
+                        ck = ck isa Integer ? max(ck - get(gone_ck, j["dir"], 0), 0) : nothing))
     end
     return entries
 end
@@ -217,79 +219,6 @@ function confirm(question; yes::Bool, io::IO, input::IO)
     yes && return true
     print(io, question, " [y/N] ")
     return lowercase(strip(readline(input))) in ("y", "yes")
-end
-
-"""
-    clean(study; site, old_checkpoints = false, runs = [], yes = false)
-
-List what the study holds on the site, and delete it after confirmation: the
-whole study there, or with `old_checkpoints` the checkpoints of every job but
-each run's newest. Nothing is deleted while a job of the study is queued or
-running. Needs no snapshot on the laptop, only the study on the site. Returns
-whether it deleted.
-"""
-function clean(study::AbstractString; site::AbstractString, old_checkpoints::Bool = false, runs = String[],
-               yes::Bool = false, io::IO = stdout, input::IO = stdin)
-    s = load_site(site)
-    checkname("a study name", study)     # the snapshot on the laptop is not needed, and may be gone
-    isempty(runs) || old_checkpoints ||
-        fail("--run chooses the runs whose old checkpoints `--old-checkpoints` deletes; without it, `clean` deletes the whole study")
-    check_connection(s)
-    code, scratch = study_code(s, study), study_scratch(s, study)
-    there = readsite(s, "for d in $(q(code)) $(q(scratch)); do [ -d \"\$d\" ] && echo \"\$d\"; done; true")
-    isempty(strip(there)) && fail("no study $(repr(study)) on $(s.name): neither $code nor $scratch exists")
-    names = [name for (_, name) in queued_jobs(s) if startswith(name, "$study-")]
-    isempty(names) || fail("jobs of study $study are queued or running on $(s.name) ($(join(unique(names), ", "))); nothing is deleted")
-    if !s.slurm
-        alive = readsite(s, "for f in $(q(scratch))/logs/*.pid; do [ -f \"\$f\" ] && kill -0 \"\$(cat \"\$f\")\" 2>/dev/null && echo \"\$f\"; done; true")
-        isempty(strip(alive)) || fail("jobs of study $study are running on $(s.name); nothing is deleted")
-    end
-
-    if old_checkpoints
-        # per run: the ck/ of every job directory but the newest that has one
-        text = readsite(s, "cd $(q(scratch)) 2>/dev/null || exit 0; for d in */; do d=\${d%/}; last=; " *
-                           "for j in \"\$d\"/[0-9][0-9][0-9]-*; do [ -d \"\$j/ck\" ] && last=\$j; done; " *
-                           "for j in \"\$d\"/[0-9][0-9][0-9]-*; do if [ -d \"\$j/ck\" ] && [ \"\$j\" != \"\$last\" ]; then " *
-                           "printf '%s\\t%s\\n' \"\$j\" \"\$(du -sk \"\$j/ck\" | cut -f1)\"; fi; done; done; true")
-        found = [(String(a), parse(Int, b)) for (a, b) in (split(l, '\t') for l in split(text, '\n'; keepempty = false))]
-        if !isempty(runs)
-            chosen, missing = chosen_runs(s, study, runs)
-            isempty(missing) || fail("study $study has no run $(join(repr.(missing), " or ")) on $(s.name): ",
-                                     "a run is named `<spec>-<label>`, or by its label")
-            filter!(f -> first(split(f[1], '/')) in chosen, found)
-        end
-        if isempty(found)
-            println(io, "no old checkpoints of study $study on $(s.name)")
-            return false
-        end
-        println(io, "old checkpoints of study $study on $(s.name) (each run's newest stay):")
-        for (path, kb) in found
-            println(io, "  ", rpad(path * "/ck", 40), lpad(kb_string(kb), 12))
-        end
-        println(io, "  total ", kb_string(sum(last, found)))
-        confirm("delete these checkpoints? They cannot be restored."; yes, io, input) || (println(io, "nothing deleted"); return false)
-        for (path, kb) in found
-            run, dir = split(path, '/')
-            # the job's directory stays read-only; the deletion is recorded beside the sizes
-            runsite(s, "cd $(q(scratch)) && chmod u+w $(q(path)) && chmod -R u+w $(q(path))/ck && rm -rf $(q(path))/ck && " *
-                       "chmod a-w $(q(path)) && printf '[[deleted]]\\ndir = \"%s\"\\ncheckpoints_kb = %s\\n\\n' $(q(dir)) $kb >> $(q(run))/diskusage.toml")
-        end
-        println(io, "deleted $(length(found)) checkpoint directories")
-        return true
-    end
-
-    sizes = split(readsite(s, "for d in $(q(code)) $(q(scratch)); do if [ -d \"\$d\" ]; then du -sk \"\$d\" | cut -f1; else echo 0; fi; done"))
-    println(io, "study $study on $(s.name):")
-    println(io, "  sources, environments and compiled caches  ", rpad(code, 50), lpad(kb_string(parse(Int, sizes[1])), 12))
-    println(io, "  output of every run, with its checkpoints  ", rpad(scratch, 50), lpad(kb_string(parse(Int, sizes[2])), 12))
-    confirm("delete both directories? They cannot be restored."; yes, io, input) || (println(io, "nothing deleted"); return false)
-    for dir in (code, scratch)
-        runsite(s, "if [ -d $(q(dir)) ]; then chmod -R u+w $(q(dir)) && rm -rf $(q(dir)); fi")
-    end
-    rm(joinpath(manifest_store(study), s.name); recursive = true, force = true)
-    snapshot = joinpath(cache_root(), study)
-    println(io, "deleted study $study on $(s.name)", isdir(snapshot) ? "; its snapshot on the laptop stays ($snapshot)" : "")
-    return true
 end
 
 """

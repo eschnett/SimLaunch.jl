@@ -15,6 +15,7 @@ set -u
 
 STUDY=toy
 SPEC=hello
+DESCRIPTION=''        # for SimWatch, as a TOML string; empty: none
 SITE=trillium
 CODE=/home/user/studies/toy
 PROJECT=/home/user/studies/toy/src/Toy
@@ -71,6 +72,7 @@ sw_write() {
         echo "status = \"$status\""
         echo "code = \"SimLaunch\""
         echo "group = \"$STUDY\""
+        if [ -n "$DESCRIPTION" ]; then echo "description = $DESCRIPTION"; fi
         echo "updated = $(sw_now)"
         echo "started = $SW_STARTED"
         echo "update_interval = 60"
@@ -164,6 +166,7 @@ sw_queued() {
         echo "status = \"queued\""
         echo "code = \"SimLaunch\""
         echo "group = \"$STUDY\""
+        if [ -n "$DESCRIPTION" ]; then echo "description = $DESCRIPTION"; fi
         echo "updated = $(sw_now)"
         echo "message = \"queued as job $JOBID${later:+, then $later}\""
         if [ "$USE_SLURM" = 1 ]; then

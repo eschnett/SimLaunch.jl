@@ -15,6 +15,7 @@ the batch script from a short job spec and a site profile, and submits it with
 - [Sites](#sites)
 - [Job specs](#job-specs)
 - [After a job](#after-a-job)
+- [Old studies](#old-studies)
 - [Restarts](#restarts)
 - [Design](#design)
 
@@ -47,7 +48,7 @@ as `julia --project=/path/to/SimLaunch -m SimLaunch <command>`.
 
 ```bash
 # the snapshot: the project and every package it takes by path
-simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1
+simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1 --note "S1 sweep over the separation"
 # or a commit, not the working tree, as for a commit's test suite
 simlaunch snapshot ~/src/jl/XCTS-harmonic --study s1-a1b2c3d --rev a1b2c3d
 
@@ -186,9 +187,30 @@ simlaunch fetch s1                  # results into <project>/simlaunch-data/s1/<
 simlaunch usage s1                  # what each job holds on disk, as it recorded it
 simlaunch after s1 jobs/s1-sweep.toml --site trillium   # the spec's [after] command again
 simlaunch cancel s1 jobs/s1-sweep.toml --site trillium --message "superseded"   # cancels its jobs, marks its runs cancelled
-simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
 simlaunch studies                   # the studies on the laptop, one name per line, sorted
 ```
+
+## Old studies
+
+```bash
+simlaunch list                      # every study on the laptop and the sites, oldest activity first
+simlaunch list --older-than 14d     # only those idle for two weeks
+simlaunch delete s1 --caches        # its compiled caches on every site; prepare compiles them again
+simlaunch delete s1 --site trillium --old-checkpoints   # all checkpoints but each run's newest
+simlaunch delete --older-than 30d   # whole studies, on every site and on the laptop
+```
+
+`list` shows one row per study and site: its project and commit, when it
+was made, its last activity, its runs by status, the disk it holds there
+(compiled caches, checkpoints, the rest), the snapshot's note and the
+Claude Code session that made it. A study with a job in the queue is live,
+even before the job has written anything. `delete` lists what it would
+delete, with sizes, and deletes after one confirmation; it refuses while a
+job of the study is queued or running. Its levels are `--caches`,
+`--old-checkpoints`, `--checkpoints`, `--large` (files above `--max-size`,
+100 MB, outside the checkpoints) and, without a level, the whole study;
+without `--site`, the whole study goes from every site and from the laptop.
+Nothing is deleted on its own, and the copies `fetch` made stay.
 
 `submit --wait` submits and then waits in the same way, on the laptop and
 on a cluster; that is also how a spec runs in CI
@@ -204,10 +226,8 @@ all finish" (1) from "simlaunch could not tell".
 
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
 `--with-checkpoints` and `--max-size` change that. `fetch --run` and
-`clean --old-checkpoints --run` take a run's name, `<spec>-<label>`, or a
-label, which names that run of every spec. `clean` refuses while a
-job of the study is queued or running, and never touches the snapshot on the
-laptop. It does not need the snapshot either.
+`delete --run` take a run's name, `<spec>-<label>`, or a label, which names
+that run of every spec.
 
 ## Restarts
 
@@ -229,7 +249,7 @@ compare = "test/compare_runs.jl"    # for check-restart
 ```bash
 simlaunch submit s2 jobs/long.toml --site trillium --chain 3   # three jobs, one after another
 simlaunch resubmit s2 jobs/long.toml --site trillium           # the next job, later
-simlaunch clean s2 --site trillium --old-checkpoints           # all but each run's newest
+simlaunch delete s2 --site trillium --old-checkpoints          # all but each run's newest
 simlaunch check-restart s2 jobs/short.toml --site trillium     # does the driver keep the contract?
 ```
 

@@ -53,6 +53,7 @@ struct Job
     restart::Union{Restart,Nothing}
     after::String                     # a shell command run after the last run, or ""
     combine::Vector{String}           # the project's combine script and its arguments
+    description::String               # for SimWatch: the spec's, else the study's note, or ""
     runs::Vector{Run}
 end
 
@@ -60,7 +61,7 @@ end
 # level as the default.
 const SITE_KEYS = ["time", "resources", "node_type", "mode", "threads", "pin", "env", "blas_threads",
                    "julia", "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "domains_per_rank", "prefix", "launcher_args"]
-const TOP_KEYS = ["name", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
+const TOP_KEYS = ["name", "description", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
 const RUN_KEYS = ["label", "cmd", "threads", "julia", "julia_args", "vars", "variant", "env", "ranks", "nodes",
                   "placement", "domains_per_rank", "mpi", "prefix", "launcher_args"]
 const RESTART_KEYS = ["from", "to", "walltime", "margin", "continue_code", "temporary", "compare"]
@@ -181,9 +182,12 @@ are the study's; `busy` the partitions that hold a job of this user already;
 hold.
 """
 function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing, only_runs = String[],
-                 file = "the spec", variants = ["default"], busy = Set{String}(), chain = 1)
+                 file = "the spec", variants = ["default"], busy = Set{String}(), chain = 1, note = "")
     check_keys(spec, [TOP_KEYS; SITE_KEYS; "site"], file)
     name = checkname("the spec's name", get(spec, "name", nothing))
+    description = get(spec, "description", note)
+    description isa AbstractString && !occursin('\n', description) ||
+        fail("$file: `description` is one line of text")
 
     # which sites, and this site's table
     sites = get(spec, "site", Dict{String,Any}())
@@ -456,7 +460,7 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     tasks = maximum(r -> max(r.ranks, 1) ÷ r.nodes, runs)
 
     return Job(name, study, site, project, seconds, nodes, gpus, type, cores, tasks, mode, blas_threads, pin, chosen,
-               node, sbatch_args, checkpoints, mutable, restart, after, combine, runs)
+               node, sbatch_args, checkpoints, mutable, restart, after, combine, String(description), runs)
 end
 
 """

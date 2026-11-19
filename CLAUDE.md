@@ -68,8 +68,9 @@ user's profile directory (`~/.config/simlaunch/sites`); the tests use both.
   (`src/spec.jl`) know that; everything after them sees what TOML gives.
 - A spec field that is not implemented is refused by name (`LATER_KEYS` in
   `src/spec.jl`), never ignored.
-- `clean` and `--old-checkpoints` delete on a site: ask Erik first, as for
-  a job. Never pass `yes = true` or `--yes` outside the tests.
+- `delete` deletes on a site and on the laptop: ask Erik first, each
+  time, as for a job, also for a study you made. Never pass `yes = true` or
+  `--yes` outside the tests. `list` only looks.
 - A study's compiled caches are its own, one depot per architecture of the
   site's profile (`[arch]`): jobs and `prepare` run with
   `JULIA_DEPOT_PATH="<study>/depot-<architecture>:"`, never with `~/.julia`

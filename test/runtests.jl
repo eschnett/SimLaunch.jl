@@ -1,7 +1,7 @@
 using SimLaunch
 using SimLaunch: UserError, parse_time, load_site, load_spec, load_snapshot, resolve, generate, snapshot,
                  prepare, submit, study_scratch, study_code, combos, combo_line, lock_dir, manifest_versions,
-                 resubmit, status, fetch, usage, clean, combine, check_restart, wait_spec, after, cancel
+                 resubmit, status, fetch, usage, combine, check_restart, wait_spec, after, cancel
 using Test
 using TOML
 
@@ -217,7 +217,8 @@ end
         end
 
         @testset "snapshot" begin
-            dest = snapshot(toy; study = "toy")
+            @test_throws "one line" snapshot(toy; study = "toy", note = "a\nb")
+            dest = snapshot(toy; study = "toy", note = "the toy study \"T\"")
             @test isfile(joinpath(dest, "src", "Toy", "src", "Toy.jl"))
             @test isfile(joinpath(dest, "src", "ToyDep", "src", "ToyDep.jl"))     # relative position kept
             @test !ispath(joinpath(dest, "src", "Toy", "Manifest.toml"))          # manifests are not copied
@@ -225,6 +226,7 @@ end
             @test !ispath(joinpath(dest, "src", "Toy", ".git"))
             snap = load_snapshot("toy")
             @test snap["project"] == "Toy"
+            @test snap["note"] == "the toy study \"T\"" && snap["session"] == get(ENV, "CLAUDE_CODE_SESSION_ID", "")
             pkgs = Dict(p["name"] => p for p in snap["package"])
             @test pkgs["Toy"]["dirty"] && length(pkgs["Toy"]["sha"]) == 40
             @test occursin("an uncommitted change", read(joinpath(dest, pkgs["Toy"]["diff"]), String))
@@ -324,6 +326,10 @@ end
             script = generate(job(spec_text(versions; top = "julia = \"9.9\""), loc))
             @test occursin("$(SimLaunch.shpath(joinpath(Sys.BINDIR, "julia"))) -t", script) && !occursin("+9.9", script)
             @test_throws "is a Julia version" job(spec_text(RUNS; top = "julia = \"1 14\""), loc)
+            # a spec's description, else the study's note, for SimWatch
+            @test job(spec_text(RUNS), loc; note = "the study").description == "the study"
+            @test job(spec_text(RUNS; top = "description = \"weak scaling\""), loc; note = "the study").description == "weak scaling"
+            @test_throws "one line of text" job(spec_text(RUNS; top = "description = \"\"\"a\nb\"\"\""), loc)
             # `project` is relative to the study's own project, whatever the folder of its checkout was called
             sub = job(spec_text(RUNS; top = "project = \"coupled\"\nenv = \"test\""), loc)
             @test sub.project == "Toy/coupled" && all(r -> r.envdir == "envs/default-test-coupled", sub.runs)
@@ -1239,7 +1245,7 @@ end
             @test !r.ok && occursin("Dates has the bound \"1\"", r.err) && occursin("only one", r.err)
         end
 
-        @testset "a chain of jobs, its disk usage, fetch and clean" begin
+        @testset "a chain of jobs, its disk usage, fetch and delete" begin
             cluster = load_site("cluster")
             cscratch = study_scratch(cluster, "toy")
             f = spec(ckpt)
@@ -1256,6 +1262,10 @@ end
             @test_throws "queued or running" submit("toy", short; site = "cluster", queue = "cpuq", io = devnull)
             queued = TOML.parsefile(joinpath(cscratch, "chain-c", "simwatch.toml"))
             @test queued["status"] in ("queued", "running")
+            @test queued["description"] == "the toy study \"T\""                     # the study's note, for SimWatch
+            # a study with a job in the queue is live, and nothing of it is deleted
+            @test only(r for r in SimLaunch.inventory(; sites = ["cluster"]) if r.study == "toy").live > 0
+            @test_throws "queued or running" SimLaunch.delete(["toy"]; sites = ["cluster"], level = :caches, yes = true, io = devnull)
             @test queued["slurm"]["cluster"] == "fakecluster"                        # which Slurm the job is in
             out = IOBuffer()
             @test wait_spec("toy", short; site = "cluster", poll = 0.5, io = out)     # the whole chain
@@ -1263,6 +1273,7 @@ end
             run_dir = joinpath(cscratch, "chain-c")
             st = TOML.parsefile(joinpath(run_dir, "simwatch.toml"))
             @test st["status"] == "finished" && st["slurm"]["previous_job_ids"] == [ids[1]]
+            @test st["description"] == "the toy study \"T\""
             @test st["slurm"]["cluster"] == "fakecluster"
             dirs = sort!(filter(startswith(r"\d\d\d-"), readdir(run_dir)))
             @test dirs == ["001-$(ids[1])", "002-$(ids[2])"]                        # the third job had nothing left to do
@@ -1302,16 +1313,32 @@ end
             @test_throws "has no run" fetch("toy"; site = "cluster", runs = ["c", "nosuch"], to = joinpath(root, "x"), io = devnull)
             @test !ispath(joinpath(root, "x", "cluster", "chain-c"))
             # old checkpoints are deleted only after a yes
+            del(level; kw...) = SimLaunch.delete(["toy"]; sites = ["cluster"], level, kw...)
             out = IOBuffer()
-            @test !clean("toy"; site = "cluster", old_checkpoints = true, io = out, input = IOBuffer("n\n"))
+            @test !del(:old_checkpoints; io = out, input = IOBuffer("n\n"))
             @test occursin("chain-c/$(dirs[1])/ck", String(take!(out))) && isdir(joinpath(run_dir, dirs[1], "ck"))
-            @test !clean("toy"; site = "cluster", old_checkpoints = true, runs = ["c"], io = out, input = IOBuffer("n\n"))
+            @test !del(:old_checkpoints; runs = ["c"], io = out, input = IOBuffer("n\n"))
             @test occursin("chain-c/$(dirs[1])/ck", String(take!(out)))
-            @test_throws "has no run" clean("toy"; site = "cluster", old_checkpoints = true, runs = ["nosuch"], yes = true, io = devnull)
-            @test clean("toy"; site = "cluster", old_checkpoints = true, yes = true, io = devnull)
+            @test_throws "has no run" del(:old_checkpoints; runs = ["nosuch"], yes = true, io = devnull)
+            @test del(:old_checkpoints; yes = true, io = devnull)
             @test !ispath(joinpath(run_dir, dirs[1], "ck")) && isdir(joinpath(run_dir, dirs[2], "ck"))
             @test !iswritable(joinpath(run_dir, dirs[1]))
             @test only(r for r in usage("toy"; site = "cluster", io = devnull) if r.dir == dirs[1]).ck == 0
+            # a large file, outside the checkpoints: listed with the warning, deleted, recorded
+            big = joinpath(run_dir, dirs[2], "big.dat")
+            chmod(dirname(big), 0o755); write(big, zeros(UInt8, 4000)); chmod(dirname(big), 0o555)
+            before = only(r for r in usage("toy"; site = "cluster", io = devnull) if r.dir == dirs[2]).kb
+            @test !del(:large; max_size = "2K", io = out, input = IOBuffer("n\n"))
+            text = String(take!(out))
+            @test occursin("chain-c/$(dirs[2])/big.dat", text) && occursin("they are lost", text)
+            @test !occursin("simwatch.toml", text) && !occursin("/ck/", text)
+            @test del(:large; max_size = "2K", runs = ["c"], yes = true, io = devnull)
+            @test !ispath(big) && !iswritable(dirname(big)) && isdir(joinpath(run_dir, dirs[2], "ck"))
+            @test only(r for r in usage("toy"; site = "cluster", io = devnull) if r.dir == dirs[2]).kb < before
+            # every checkpoint: the run cannot continue
+            @test del(:checkpoints; runs = ["c"], yes = true, io = devnull)
+            @test !ispath(joinpath(run_dir, dirs[2], "ck")) && !iswritable(joinpath(run_dir, dirs[2]))
+            @test only(r for r in usage("toy"; site = "cluster", io = devnull) if r.dir == dirs[2]).ck == 0
 
             # a job stopped on a pre-emptible queue submits its successor, which starts after it has ended
             g = spec(replace(ckpt, "name = \"chain\"" => "name = \"pre\"", "steps=20 delay=0.3" => "steps=16 delay=0.4"))
@@ -1348,27 +1375,51 @@ end
             @test_throws "needs `compare`" check_restart("toy", spec(replace(ckpt, "compare = \"examples/compare.jl\"" => "")); site = "local", io = devnull)
         end
 
-        @testset "clean" begin
-            cluster = load_site("cluster")
+        @testset "list and delete" begin
+            cluster, here = load_site("cluster"), load_site("local")
             out = IOBuffer()
-            @test_throws "without it, `clean` deletes the whole study" clean("toy"; site = "cluster", runs = ["x"], io = devnull)
-            @test !clean("toy"; site = "cluster", io = out, input = IOBuffer("\n"))
-            @test occursin("delete both directories?", String(take!(out))) && isdir(study_code(cluster, "toy"))
-            @test clean("toy"; site = "cluster", yes = true, io = devnull)
-            @test !ispath(study_code(cluster, "toy")) && !ispath(study_scratch(cluster, "toy"))
-            @test isfile(joinpath(ENV["SIMLAUNCH_CACHE"], "toy", "snapshot.toml"))   # the snapshot stays
+            rows = SimLaunch.list(; io = out)
+            text = String(take!(out))
+            toy_cluster = only(r for r in rows if r.study == "toy" && r.site == "cluster")
+            @test toy_cluster.live == 0 && toy_cluster.caches > 0 && toy_cluster.note == "the toy study \"T\""
+            @test toy_cluster.project == "Toy@" * only(p for p in load_snapshot("toy")["package"] if p["name"] == "Toy")["sha"][1:7]
+            @test any(r -> r.study == "toy" && r.site == "local", rows)
+            @test occursin(r"^study\s+site\s+project", text) && occursin("the toy study", text)
+            @test all(r -> r.live > 0 || !isempty(r.error), SimLaunch.list(; older_than = "1d", io = devnull))   # all is new
+            @test_throws "an age is" SimLaunch.list(; older_than = "3x", io = devnull)
+            @test_throws "--run chooses" SimLaunch.delete(["toy"]; sites = ["cluster"], runs = ["x"], io = devnull)
+            @test_throws "not both" SimLaunch.delete(["toy"]; older_than = "1d", io = devnull)
+            @test_throws "no study" SimLaunch.delete(["nosuch"]; sites = ["local"], yes = true, io = devnull)
+            @test_throws "simlaunch delete" SimLaunch.command(["clean", "toy", "--site", "cluster"])
+            # the compiled caches: the sources stay, and `prepare` must run again
+            code = study_code(cluster, "toy")
+            @test !SimLaunch.delete(["toy"]; sites = ["cluster"], level = :caches, io = out, input = IOBuffer("n\n"))
+            text = String(take!(out))
+            @test occursin("compiled caches", text) && occursin("`prepare` compiles them again", text)
+            @test SimLaunch.delete(["toy"]; sites = ["cluster"], level = :caches, yes = true, io = devnull)
+            @test !any(startswith("depot"), readdir(code)) && isdir(joinpath(code, "src"))
+            @test only(r for r in SimLaunch.inventory(; sites = ["cluster"]) if r.study == "toy").caches == 0
+            # the whole study on one site: the snapshot stays
+            @test !SimLaunch.delete(["toy"]; sites = ["cluster"], io = out, input = IOBuffer("\n"))
+            @test occursin("delete all this?", String(take!(out))) && isdir(code)
+            @test SimLaunch.delete(["toy"]; sites = ["cluster"], yes = true, io = devnull)
+            @test !ispath(code) && !ispath(study_scratch(cluster, "toy"))
+            @test isfile(joinpath(ENV["SIMLAUNCH_CACHE"], "toy", "snapshot.toml"))
             @test all(r -> r.site == "local", status(["toy"]; io = devnull))
-            @test_throws "on cluster: neither" clean("toy"; site = "cluster", yes = true, io = devnull)
-            @test_throws "on local: neither" clean("nosuch"; site = "local", yes = true, io = devnull)
-            # a study whose snapshot is gone from the laptop can still be removed from a site
-            lost = load_site("local")
-            for dir in (study_code(lost, "lost"), study_scratch(lost, "lost"))
+            @test_throws "no study" SimLaunch.delete(["toy"]; sites = ["cluster"], yes = true, io = devnull)
+            # a study whose snapshot is gone from the laptop can still be deleted on a site
+            for dir in (study_code(here, "lost"), study_scratch(here, "lost"))
                 mkpath(joinpath(dir, "sub")); chmod(joinpath(dir, "sub"), 0o555)
             end
-            out = IOBuffer()
-            @test clean("lost"; site = "local", yes = true, io = out)
-            @test !ispath(study_code(lost, "lost")) && !ispath(study_scratch(lost, "lost"))
+            @test any(r -> r.study == "lost" && r.site == "local" && r.project == "?", SimLaunch.inventory())
+            @test SimLaunch.delete(["lost"]; sites = ["local"], yes = true, io = out)
+            @test !ispath(study_code(here, "lost")) && !ispath(study_scratch(here, "lost"))
             @test !occursin("snapshot", String(take!(out)))
+            # without --site: every site, and the snapshot on the laptop
+            @test SimLaunch.delete(["toy"]; yes = true, io = out)
+            @test occursin("deleted the snapshot of study toy", String(take!(out)))
+            @test !ispath(joinpath(ENV["SIMLAUNCH_CACHE"], "toy")) && !ispath(study_code(here, "toy"))
+            @test !any(r -> r.study == "toy", SimLaunch.inventory())
         end
     end
     run(`chmod -R u+w $root`)

@@ -211,17 +211,20 @@ function copy_trees(project, tmp, prefix, files, commit)
 end
 
 """
-    snapshot(project; study, rev = nothing, variants = [])
+    snapshot(project; study, rev = nothing, variants = [], note = "")
 
 Copy the project at `project` and its path packages into the cache as the
 study `study`. With `rev`, a commit such as `"HEAD"` or a SHA, the project
 and the path packages in its git repository are copied as the commit holds
 them, not as the working tree does. `variants` are pairs `name => directory`:
-further versions of the project, for comparisons inside one job. Returns the
-snapshot's directory.
+further versions of the project, for comparisons inside one job. `note` is
+a line on what the study is for. The Claude Code session it runs in, if any,
+is recorded too, for information. Returns the snapshot's directory.
 """
-function snapshot(project::AbstractString; study::AbstractString, rev = nothing, variants = Pair{String,String}[])
+function snapshot(project::AbstractString; study::AbstractString, rev = nothing, variants = Pair{String,String}[],
+                  note::AbstractString = "")
     checkname("a study name", study)
+    occursin('\n', note) && fail("a study's note is one line")
     project = abspath(expanduser(project))
     isdir(project) || fail("no such directory: $project")
     project = realpath(project)
@@ -254,6 +257,8 @@ function snapshot(project::AbstractString; study::AbstractString, rev = nothing,
                                 "created" => Dates.format(now(), dateformat"yyyy-mm-ddTHH:MM:SS"),
                                 "simlaunch" => VERSION_STRING,
                                 "project" => rel,
+                                "note" => note,
+                                "session" => get(ENV, "CLAUDE_CODE_SESSION_ID", ""),
                                 "pins" => [Dict{String,Any}("name" => pin.name, "owner" => pin.owner,
                                                             "rev" => something(pin.rev, ""))
                                            for pin in pins],

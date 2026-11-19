@@ -430,8 +430,8 @@ differences ([Prepare](#prepare)).
 
 **Cost.** A snapshot is a few tens of MB (XCTS's seven trees: 36 MB) and a few
 seconds of rsync. A study that is reused for many runs pays it once. Old
-snapshots are never removed automatically, and no command removes them yet:
-`simlaunch clean` deletes a study on a site, not on the laptop.
+snapshots are never removed automatically: `simlaunch delete <study>` removes
+one with the study's directories on its sites ("Delete" below).
 
 ## Prepare
 
@@ -499,7 +499,7 @@ Trillium on 2026-11-16: with one shared depot, preparing a second study wrote
 a newer cache of a package both use (SpecialFunctions), and the first study's
 caches, built against the older one, were then rejected and compiled again.
 A study's caches are now touched only by its own `prepare`, so they are as
-immutable as its sources, and `clean` removes them with the study. The cost
+immutable as its sources, and `delete` removes them with the study. The cost
 is disk space in the code root: each study compiles its dependencies again
 (XCTS-harmonic on Trillium: 104 MB, half a minute).
 
@@ -976,13 +976,67 @@ job of a chain whose runs have all finished ends at once. A run with
 checkpoints has one job at a time: `submit` refuses a second while one is
 queued or running.
 
-**Cleanup.** `simlaunch clean <study> --site <site>` lists what it would
-delete there (the study's sources and caches, and its output, with sizes) and
-deletes only after confirmation, first restoring write permission on the job
-directories it made read-only. It refuses while a job of the study is queued
-or running. The snapshot on the laptop stays, and is not needed: a study
-whose snapshot is gone can still be removed from a site. Nothing is ever deleted automatically: step H1's checkpoints alone
-reached 94 GB, and deleting checkpoints has been Erik's decision each time.
+**What there is, and its age.** Studies pile up: agents make one per
+commit or experiment, on several sites, and the session that made one may be
+archived long before anyone looks at its output. `simlaunch list` is one
+table of every study, oldest first, so that what is old can be found
+without remembering it:
+
+- one row per study and site, and one for a study that is only on the
+  laptop. The studies come from the laptop's cache and from a listing of
+  each site's study directories, so a study whose snapshot is gone, but
+  which still holds space on a site, shows too. The sites are those any
+  study was prepared on, and those named with `--site`;
+- each row: the project and its commit, when the snapshot was taken, the
+  last activity, the runs by status, the disk the study holds there (the
+  compiled caches, the checkpoints, the rest), its live jobs, the snapshot's
+  note and the session that made it;
+- the last activity is the newest of the snapshot, the site's `prepared`
+  files and the runs' SimWatch `updated`. A study with a job in the queue,
+  waiting or running, is live: such a job may not have written anything
+  yet. A live study counts as active now;
+- the sizes of the outputs are the ones each job recorded
+  (`diskusage.toml`), so that `list` does not walk the output on a
+  parallel file system; the caches are measured, which is quick;
+- one ssh call per site, and a site that cannot be reached is a row that
+  says so, not an error. `--older-than 14d` and `--site` narrow the table.
+
+**Delete.** `simlaunch delete <study>…` lists what it would delete, with
+sizes, site by site, and deletes after one confirmation. It refuses on a
+site where a job of the study is queued or running. Without `--site` it
+deletes on every site the study is on, and the snapshot on the laptop with
+it; with `--site`, only there. `--older-than <age>` instead of names takes
+the studies that `list --older-than` shows. It has levels:
+
+| Option | Deletes | Afterwards |
+| --- | --- | --- |
+| `--caches` | the compiled caches (`depot-<arch>/` with the packages, or `depot/` in a study from before 2026-11-17) | `prepare` again before another job |
+| `--old-checkpoints` | the checkpoints of every job but each run's newest | the runs can continue |
+| `--checkpoints` | every checkpoint | the runs cannot continue |
+| `--large` | files above `--max-size` (100 MB), outside `ck/` | |
+| (none) | the study: sources, caches and output | |
+
+`--run` narrows the checkpoint levels and `--large` to some runs. A large
+file is one that `fetch` leaves on the site, so deleting it loses it; the
+confirmation says so. A deletion inside a job directory restores its write
+permission for the deletion only, and is recorded in the run's
+`diskusage.toml`, so that `usage` and `list` stay right. Caches are not
+deleted when a job ends: a study often gets several specs one after
+another, and `combine` and `after` use its environments, so that deleting
+them at once would mean compiling again for each. Nothing is ever deleted
+automatically, and an agent asks Erik before each deletion: step H1's
+checkpoints alone reached 94 GB, and deleting checkpoints has been Erik's
+decision each time. The snapshot on the laptop is not needed: a study whose
+snapshot is gone can still be deleted on a site. Until 2026-11-19 the
+command was `clean`, with only the whole study and `--old-checkpoints`.
+
+**What a study is for.** `snapshot --note "…"` keeps a line in
+`snapshot.toml`, and `snapshot` records the Claude Code session it ran in
+(`CLAUDE_CODE_SESSION_ID`), for information only: after a session is
+archived, `list` still says which session made a study, and so which
+transcript to read. A spec may have a `description`; every run's SimWatch
+file carries it, or else the study's note, as `description`, which
+SimWatch shows from the version after 1.6.0.
 
 ## Immutable outputs and restarts
 
@@ -1088,7 +1142,7 @@ restart exposed to it.
 kept one set, so a chain of N jobs holds up to N sets. A driver should keep
 only its newest checkpoint in its `ck/`. SimLaunch never deletes checkpoints
 by itself, and neither does a job: whoever runs the jobs deletes them.
-`simlaunch clean <study> --site <site> --old-checkpoints` lists the
+`simlaunch delete <study> --site <site> --old-checkpoints` lists the
 checkpoints of every job but each run's newest, with sizes, and deletes them
 after confirmation; the deletion is recorded in the run's `diskusage.toml`. The
 clusters' scratch purges apply to these files as to any others: fetch what
@@ -1103,7 +1157,7 @@ entry says `unknown` and the job still ends. `simlaunch usage <study>` adds
 up the recorded numbers per run, per job and per site. It reads only these
 small files and never walks a tree, so it answers at once.
 `simlaunch usage --measure` walks the trees for entries that are `unknown`
-or for a job still running, and is the only slow path. `clean` measures
+or for a job still running, and is the only slow path. `delete` measures
 what it is about to delete.
 
 SimWatch shows a run while it runs, when the running job's size is not known
@@ -1511,7 +1565,7 @@ and for clusters that are down.
   its own manifests; the tool reports the differences and does not prevent
   them.
 - [x] **Old checkpoints.** Deleted by whoever runs the jobs, with
-  `clean --old-checkpoints`; never by SimLaunch or a job on its own.
+  `delete --old-checkpoints`; never by SimLaunch or a job on its own.
 - [x] **Suites without `Pkg.test`.** Accepted on every site: a suite job runs
   `test/runtests.jl` in a prepared environment.
 - [x] **Disk usage in SimWatch.** `simlaunch usage` is where it is asked

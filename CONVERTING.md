@@ -35,8 +35,11 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
    product of versions, sizes and rounds, write `jobs/<name>.jl` instead:
    see "A spec in Julia" in `SPEC.md`.
 3. **Take a snapshot** of the project:
-   `simlaunch snapshot . --study <study>`, with `--variant <name>=<directory>`
-   for each further version the script compares.
+   `simlaunch snapshot . --study <study> --note "<what it is for>"`, with
+   `--variant <name>=<directory>` for each further version the script
+   compares. The note is how a study is recognised later, in
+   `simlaunch list` and in SimWatch, after the session that made it is gone:
+   always give one.
 4. **Look at the result without a cluster**:
    `simlaunch submit <study> jobs/<name>.toml --site <site> --dry-run`
    prints the queue it chose and the whole batch script. Compare it with
@@ -46,6 +49,10 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
    `--site local`.
 6. **Prepare and submit on the cluster**, once against one run of the old
    script.
+7. **When the results are in**, run `simlaunch list` and propose to Erik
+   what of your studies can go: their compiled caches (`delete --caches`),
+   old checkpoints, or whole studies. `delete` asks before it deletes, and
+   only Erik answers: never pass `--yes`.
 
 ## What becomes what
 
