@@ -39,6 +39,7 @@ struct Job
     time::Union{Int,Nothing}          # seconds
     nodes::Int
     gpus::Int                         # 0: a CPU job
+    type::NodeType                    # the kind of node it runs on
     cores::Int                        # of one node of the allocation
     tasks::Int                        # tasks per node in the batch header: the most ranks a run starts there
     mode::Symbol                      # :sequential or :parallel
@@ -57,7 +58,7 @@ end
 
 # Keys that may depend on the site: read from [site.<name>], with the top
 # level as the default.
-const SITE_KEYS = ["time", "resources", "mode", "threads", "pin", "env", "blas_threads",
+const SITE_KEYS = ["time", "resources", "node_type", "mode", "threads", "pin", "env", "blas_threads",
                    "julia", "julia_args", "vars", "queue", "node", "sbatch_args", "mpi", "placement", "domains_per_rank", "prefix", "launcher_args"]
 const TOP_KEYS = ["name", "project", "site", "checkpoints", "mutable_restarts", "restart", "after", "combine", "run"]
 const RUN_KEYS = ["label", "cmd", "threads", "julia", "julia_args", "vars", "variant", "env", "ranks", "nodes",
@@ -222,18 +223,18 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     nodes = get(resources, "nodes", 1)
     nodes isa Integer && nodes >= 1 || fail("$file: `resources.nodes` must be a positive integer")
     nodes > 1 && !site.slurm && fail("$file asks for $nodes nodes, but site $(site.name) is one machine")
+    type = node_type(site, setting("node_type", nothing); gpus = gpus > 0, where = file)
+    nodes_of = length(site.types) == 1 ? site.name : "$(site.name)'s $(type.name) nodes"
     if gpus > 0
-        g = site.gpu
-        g === nothing && fail("$file asks for GPUs, but site $(site.name) has none in its profile")
+        g = type.gpus
         g.max !== nothing && gpus > g.max &&
-            fail("$file asks for $gpus GPUs, but a job on $(site.name) gets at most $(g.max)")
+            fail("$file asks for $gpus GPUs, but a job on $nodes_of gets at most $(g.max)")
         cores = gpus * g.cores
     else
-        site.cores > 0 || fail("site $(site.name) runs GPU jobs only; give `resources = { gpus = 1 }` in [site.$(site.name)]")
-        cores = site.cores
+        cores = type.cores
     end
-    what = gpus > 0 ? "the $gpus GPU$(gpus == 1 ? "" : "s") of this job on $(site.name) come$(gpus == 1 ? "s" : "") with" :
-                      "a node of $(site.name) has"
+    what = gpus > 0 ? "the $gpus GPU$(gpus == 1 ? "" : "s") of this job on $nodes_of come$(gpus == 1 ? "s" : "") with" :
+                      "a node of $nodes_of has"
 
     mode = setting("mode", "sequential")
     mode in ("sequential", "parallel") || fail("$file: `mode` is \"sequential\" or \"parallel\", not $(repr(mode))")
@@ -269,15 +270,15 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     restart !== nothing && seconds !== nothing && !isempty(restart.walltime) && restart.margin >= seconds &&
         fail("$file: the margin of $(time_string(restart.margin)) in [restart] leaves nothing of the job's $(time_string(seconds))")
     chosen = nothing
-    if site.slurm && !site.partition
+    if site.slurm && isempty(type.queues)
         something(queue, setting("queue", nothing), Some(nothing)) === nothing ||
             fail("site $(site.name) chooses the partition itself; give no queue")
-        site.max_time !== nothing && seconds > site.max_time &&
-            fail("$file asks for $(time_string(seconds)), but $(site.name) allows at most $(time_string(site.max_time))")
+        type.max_time !== nothing && seconds > type.max_time &&
+            fail("$file asks for $(time_string(seconds)), but $nodes_of allow$(length(site.types) == 1 ? "s" : "") at most $(time_string(type.max_time))")
     elseif site.slurm
         asks = "$file asks for $(time_string(seconds)) on " *
                (gpus > 0 ? "$gpus GPU$(gpus == 1 ? "" : "s")" : "$nodes node$(nodes == 1 ? "" : "s")")
-        chosen = choose_queue(site, gpus > 0 ? site.gpu.queues : site.queues;
+        chosen = choose_queue(site, type;
                               name = something(queue, setting("queue", nothing), Some(nothing)), what = asks, busy,
                               seconds, nodes, gpus, checkpoints, chain)
     end
@@ -382,20 +383,20 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         placement in ("", "numa") || fail("$where: `placement` is \"numa\", not $(repr(placement))")
         if placement == "numa"
             gpus > 0 && fail("$where: `placement = \"numa\"` is for CPU jobs")
-            site.numa > 1 || fail("$where: the profile of $(site.name) names no NUMA domains (`numa` in its node table)")
+            type.numa > 1 || fail("$where: the profile of $(site.name) names no NUMA domains (`numa` of its $(type.name) nodes)")
             rpn = max(ranks, 1) ÷ run_nodes
-            rpn <= site.numa ||
-                fail("$where: $rpn ranks on a node do not fit its $(site.numa) NUMA domains, at least one domain a rank")
+            rpn <= type.numa ||
+                fail("$where: $rpn ranks on a node do not fit its $(type.numa) NUMA domains, at least one domain a rank")
             # the job's `domains_per_rank` is for its runs that are placed; a run's own needs a placement
             domains = get(r, "domains_per_rank", setting("domains_per_rank", 0))
             if haskey(r, "domains_per_rank") || domains != 0
                 domains isa Integer && domains >= 1 || fail("$where: `domains_per_rank` must be a positive integer")
-                rpn * domains <= site.numa ||
+                rpn * domains <= type.numa ||
                     fail("$where: $rpn rank$(rpn == 1 ? "" : "s") on a node with $domains NUMA domains each ",
-                         "do not fit its $(site.numa) domains")
+                         "do not fit its $(type.numa) domains")
             else
-                site.numa % rpn == 0 ||
-                    fail("$where: $rpn ranks on a node cannot share its $(site.numa) NUMA domains evenly; ",
+                type.numa % rpn == 0 ||
+                    fail("$where: $rpn ranks on a node cannot share its $(type.numa) NUMA domains evenly; ",
                          "`placement = \"numa\"` gives every rank the same number of domains. ",
                          "`domains_per_rank` names a smaller number")
             end
@@ -416,8 +417,8 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         # a rank has its share of the node, and so of its NUMA domains; a placed run has the cores of the
         # domains it is bound to: those it names, or else its share, or one domain without ranks
         share = placement != "numa" ? max(1, cores ÷ rpn) :
-                domains > 0 ? max(1, domains * (cores ÷ site.numa)) :
-                ranks == 0 ? max(1, cores ÷ site.numa) : max(1, cores ÷ rpn)
+                domains > 0 ? max(1, domains * (cores ÷ type.numa)) :
+                ranks == 0 ? max(1, cores ÷ type.numa) : max(1, cores ÷ rpn)
         default_threads = get(table, "threads", get(spec, "threads",
                               ranks > 0 || placement == "numa" ? share : mode === :parallel ? max(1, cores ÷ nruns) : cores))
         threads = get(r, "threads", default_threads)
@@ -451,7 +452,7 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     end
     tasks = maximum(r -> max(r.ranks, 1) ÷ r.nodes, runs)
 
-    return Job(name, study, site, project, seconds, nodes, gpus, cores, tasks, mode, blas_threads, pin, chosen,
+    return Job(name, study, site, project, seconds, nodes, gpus, type, cores, tasks, mode, blas_threads, pin, chosen,
                node, sbatch_args, checkpoints, mutable, restart, after, combine, runs)
 end
 
@@ -535,12 +536,13 @@ struct Combo
     arch::String                      # the architecture of the nodes it runs on: which depot holds its caches
     target::String                    # that architecture's JULIA_CPU_TARGET, or ""
     julia::String                     # the Julia version, or "": the site's own Julia
+    type::String                      # a kind of node of that architecture, where a precompile job runs
 end
 
 "The architecture of the nodes a job runs on."
-job_arch(job::Job) = queue_arch(job.site, job.queue, job.gpus > 0)
+job_arch(job::Job) = job.type.arch
 
 "The combinations a job needs."
 combos(job::Job) = unique!([Combo(job.project, r.variant, r.env, r.envdir, join(q.(r.julia_args), " "), job.gpus > 0, r.mpi,
-                                  job_arch(job), job.site.archs[job_arch(job)], r.julia)
+                                  job_arch(job), job.site.archs[job_arch(job)], r.julia, job.type.name)
                             for r in job.runs])

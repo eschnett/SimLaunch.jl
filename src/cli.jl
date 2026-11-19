@@ -17,8 +17,9 @@ const USAGE = """
           Copy the project and the packages it takes by path, as the study <study>.
           --rev copies them as a commit of the project's repository holds them, not the working tree.
           A variant is another version of the project, for comparisons in one job.
-      simlaunch prepare <study> --site <site> [--spec <spec.toml>]...
+      simlaunch prepare <study> --site <site> [--spec <spec.toml>]... [--run <label>]...
           Copy the study to the site, instantiate and precompile it there.
+          --run prepares only the named runs of the one spec, as `submit --run` submits them.
       simlaunch submit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]...
                        [--chain <n>] [--wait [--poll <seconds>]] [--dry-run]
           Generate the batch script and submit it. --dry-run only prints it.
@@ -44,9 +45,8 @@ const USAGE = """
           Cancel the spec's jobs and mark its runs that have not ended as cancelled, for SimWatch.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
           Run the spec's [combine] script over each run's job directories.
-      simlaunch after <study> <spec.toml> --site <site> [--run <label>]... [--checkout]
+      simlaunch after <study> <spec.toml> --site <site> [--run <label>]...
           Run the spec's [after] command again over the runs' newest job directories.
-          --checkout takes PROJECT from the project as it is here now, not from the snapshot.
       simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...
           Test the spec's driver against the restart contract, with real jobs.
       simlaunch sites
@@ -151,9 +151,9 @@ function command(args)
             println("  variant $(v["name"]): ", join([p["name"] for p in v["package"]], ", "))
         end
     elseif cmd == "prepare"
-        pos, opt = parse_args(rest, ["site", "spec"]; multi = ["spec"])
-        length(pos) == 1 || fail("usage: simlaunch prepare <study> --site <site> [--spec <spec.toml>]...")
-        prepare(pos[1]; site = need(opt, "site"), specs = get(opt, "spec", String[]))
+        pos, opt = parse_args(rest, ["site", "spec", "run"]; multi = ["spec", "run"])
+        length(pos) == 1 || fail("usage: simlaunch prepare <study> --site <site> [--spec <spec.toml>]... [--run <label>]...")
+        prepare(pos[1]; site = need(opt, "site"), specs = get(opt, "spec", String[]), only_runs = get(opt, "run", String[]))
     elseif cmd in ("submit", "resubmit")
         pos, opt = parse_args(rest, ["site", "queue", "run", "chain", "poll"], cmd == "submit" ? ["dry-run", "wait"] : ["wait"]; multi = ["run"])
         length(pos) == 2 ||
@@ -205,10 +205,9 @@ function command(args)
         length(pos) == 2 || fail("usage: simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...")
         combine(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]))
     elseif cmd == "after"
-        pos, opt = parse_args(rest, ["site", "run"], ["checkout"]; multi = ["run"])
-        length(pos) == 2 || fail("usage: simlaunch after <study> <spec.toml> --site <site> [--run <label>]... [--checkout]")
-        after(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]),
-              checkout = get(opt, "checkout", false))
+        pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
+        length(pos) == 2 || fail("usage: simlaunch after <study> <spec.toml> --site <site> [--run <label>]...")
+        after(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]))
     elseif cmd == "check-restart"
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
         length(pos) == 2 || fail("usage: simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...")

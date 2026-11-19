@@ -21,11 +21,11 @@ function scale_mem(mem, gpus)
 end
 
 """
-The `#SBATCH` lines of a job on a Slurm site: `gpus` GPUs, or `nodes` CPU
-nodes for `gpus = 0`, with `tasks` tasks on each node. `queue` is `nothing`
-where the site chooses the partition.
+The `#SBATCH` lines of a job on a Slurm site, on its kind of node `type`:
+`gpus` GPUs, or `nodes` CPU nodes for `gpus = 0`, with `tasks` tasks on each
+node. `queue` is `nothing` where the site chooses the partition.
 """
-function sbatch_header(io::IO, site::Site; queue, gpus, time, name, output, nodes = 1, tasks = 1,
+function sbatch_header(io::IO, site::Site, type::NodeType; queue, gpus, time, name, output, nodes = 1, tasks = 1,
                        node = "", extra = String[], requeue = false)
     site.account === nothing || println(io, "#SBATCH --account=$(site.account)")
     queue === nothing || println(io, "#SBATCH --partition=$(queue)")
@@ -33,15 +33,15 @@ function sbatch_header(io::IO, site::Site; queue, gpus, time, name, output, node
     several = nodes > 1 || tasks > 1
     println(io, several ? "#SBATCH --ntasks-per-node=$tasks" : "#SBATCH --ntasks=1")
     if gpus > 0
-        g = site.gpu
+        g = type.gpus
         println(io, "#SBATCH ", replace(g.request, "%d" => string(gpus)))
         g.request_cores && println(io, "#SBATCH --cpus-per-task=$(gpus * g.cores ÷ tasks)")
         g.mem === nothing || println(io, "#SBATCH --mem=$(scale_mem(g.mem, gpus))")
     else
-        (several || !site.whole_node) && println(io, "#SBATCH --cpus-per-task=$(site.cores ÷ tasks)")
-        for line in site.node_header
-            println(io, "#SBATCH $line")
-        end
+        (several || !type.whole) && println(io, "#SBATCH --cpus-per-task=$(type.cores ÷ tasks)")
+    end
+    for line in type.header
+        println(io, "#SBATCH $line")
     end
     isempty(node) || println(io, "#SBATCH --nodelist=$node")
     println(io, "#SBATCH --time=$(time_string(time))")
@@ -112,6 +112,16 @@ function run_command(job::Job, r::Run)
             # the binary's own mpiexec, found through MPI.jl
             push!(words, julia, "--startup-file=no", "--project=$envdir", "\"\$TOOLS\"/mpiexec.jl")
             append!(words, q.(rec.launcher_args), q.(r.launcher_args))
+            if rec.multi_node && job.nodes > 1
+                # the run's nodes, the job's first, and as many ranks on each: left to itself, an mpiexec fills
+                # each node's Slurm slots in turn, as many as the run with the most ranks on a node needs
+                rpn = r.ranks ÷ r.nodes
+                if rec.implementation == "openmpi"
+                    push!(words, "--host", "\"\$(node_list $(r.nodes) :$rpn)\"")
+                else
+                    push!(words, "-ppn", string(rpn), "-hosts", "\"\$(node_list $(r.nodes))\"")
+                end
+            end
             push!(words, "-n", string(r.ranks))
             # srun gives every rank the job's environment. An mpiexec need not, on another node: the run's
             # variables are set again on the rank's side
@@ -129,8 +139,9 @@ function run_command(job::Job, r::Run)
         # `submit` checks against
         rpn = max(r.ranks, 1) ÷ r.nodes
         # which rank on its node this is: srun says so; under an mpiexec the batch step's SLURM_LOCALID (0) is
-        # inherited and says nothing, and Open MPI or Hydra do
-        id = srun && r.ranks > 0 ? "\${SLURM_LOCALID:-0}" : r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${PMI_RANK:-0}}" : "0"
+        # inherited and says nothing, and Open MPI or Hydra do (PMI_RANK counts over all nodes)
+        id = srun && r.ranks > 0 ? "\${SLURM_LOCALID:-0}" :
+             r.ranks > 0 ? "\${OMPI_COMM_WORLD_LOCAL_RANK:-\${MPI_LOCALRANKID:-0}}" : "0"
         width = r.domains > 0 ? string(r.domains) : r.ranks > 0 ? "\$(( n / $rpn ))" : "1"
         misfit = r.domains > 0 ?
                  "if [ \"\${n:-0}\" -lt $(rpn * r.domains) ]; then " *
@@ -174,7 +185,7 @@ function generate(job::Job; script = "", successor = true)
     isempty(script) && (script = joinpath(code, "jobs", job.name * ".sh"))
     io = IOBuffer()
     println(io, "#!/bin/bash")
-    site.slurm && sbatch_header(io, site; queue = job.queue === nothing ? nothing : job.queue.partition,
+    site.slurm && sbatch_header(io, site, job.type; queue = job.queue === nothing ? nothing : job.queue.partition,
                                 gpus = job.gpus, time = job.time, name = "$(job.study)-$(job.name)",
                                 output = log_file(job, "%j"), nodes = job.nodes, tasks = job.tasks,
                                 node = job.node, requeue = job.mutable,
@@ -258,7 +269,7 @@ function generate(job::Job; script = "", successor = true)
     for m in site.modules
         println(io, "module load $(q(m))")
     end
-    println(io, "unset JULIA_LOAD_PATH JULIA_PROJECT")
+    println(io, "unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET   # set below where the caches were compiled for a target")
     println(io, "export JULIA_DEPOT_PATH=\"\$DEPOT:\"         # the study's depot, then Julia's own; not ~/.julia")
     println(io, "export OPENBLAS_NUM_THREADS=$(job.blas_threads)")
     println(io, "export JULIA_PKG_PRECOMPILE_AUTO=0")

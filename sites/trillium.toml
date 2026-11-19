@@ -16,7 +16,13 @@ scratch = "<a directory for the runs' output, such as /scratch/USER/simlaunch/st
 [slurm]
 account = "<your Slurm account, such as def-NAME>"
 export_env = false                     # sbatch runs with --export=NONE
-node = { cores = 192, numa = 8, mem = "767000M", whole = true }
+
+[[slurm.nodes]]                        # the one kind of node: Zen 5, 192 cores
+name = "cpu"
+cores = 192
+numa = 8
+mem = "767000M"
+whole = true                           # a job gets whole nodes
 queues = [                             # in the order of preference
   { partition = "debug",   max_time = "1:00:00",  max_nodes = 4, one_at_a_time = true },
   { partition = "compute", min_time = "0:15:00", max_time = "24:00:00" },   # sbatch refuses less than 15 min

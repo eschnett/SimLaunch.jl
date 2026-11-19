@@ -48,6 +48,13 @@ run_dir() {   # RUN-INDEX: the run's directory, which holds one directory per jo
     echo "$SCRATCH/$SPEC-${LABELS[$1]}"
 }
 
+# node_list N [SUFFIX]: the job's first N nodes, with commas between them and SUFFIX after each: where a
+# run under an mpiexec starts its ranks.
+node_list() {
+    scontrol show hostnames "$SLURM_JOB_NODELIST" |
+        awk -v n="$1" -v s="${2:-}" 'NR <= n { printf "%s%s%s", (NR > 1 ? "," : ""), $0, s }'
+}
+
 sw_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -447,7 +454,7 @@ if [ "$USE_SLURM" = 0 ]; then echo $$ > "$SCRATCH/logs/$SPEC-$JOBID.pid"; fi
 
 # The environment. Everything is set here; nothing is taken from the
 # submitting shell.
-unset JULIA_LOAD_PATH JULIA_PROJECT
+unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET   # set below where the caches were compiled for a target
 export JULIA_DEPOT_PATH="$DEPOT:"         # the study's depot, then Julia's own; not ~/.julia
 export OPENBLAS_NUM_THREADS=1
 export JULIA_PKG_PRECOMPILE_AUTO=0
@@ -485,7 +492,7 @@ run_0() {   # base-8r
 run_1() {   # new-16r
     set +u; module load nvhpc-hpcx-cuda12/24.9; set -u
     export OMP_NUM_THREADS=1
-    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-mpiabi "$TOOLS"/mpiexec.jl --bind-to none -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${PMI_RANK:-0}}; n=; read -r _ n _ < <(numactl -H 2>/dev/null); if [ "${n:-0}" -lt 8 ] || [ $(( n % 8 )) != 0 ]; then echo "placement: $(hostname -s) has ${n:-no} NUMA domains, which 8 ranks cannot share evenly" >&2; exit 1; fi; w=$(( n / 8 )); d=$(( l * w )); if [ $w -gt 1 ]; then d=$d-$(( d + w - 1 )); fi; exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-mpiabi "$PROJECT"/examples/hello.jl n=1
+    exec "$JULIA" --startup-file=no --project="$CODE"/envs/default-test+mpi-mpiabi "$TOOLS"/mpiexec.jl --bind-to none --host "$(node_list 2 :8)" -n 16 bash -c 'l=${OMPI_COMM_WORLD_LOCAL_RANK:-${MPI_LOCALRANKID:-0}}; n=; read -r _ n _ < <(numactl -H 2>/dev/null); if [ "${n:-0}" -lt 8 ] || [ $(( n % 8 )) != 0 ]; then echo "placement: $(hostname -s) has ${n:-no} NUMA domains, which 8 ranks cannot share evenly" >&2; exit 1; fi; w=$(( n / 8 )); d=$(( l * w )); if [ $w -gt 1 ]; then d=$d-$(( d + w - 1 )); fi; exec numactl --cpunodebind=$d --membind=$d "$@"' numa perf stat -e cache-misses "$JULIA" -t 8 --project="$CODE"/envs/default-test+mpi-mpiabi "$PROJECT"/examples/hello.jl n=1
 }
 run_2() {   # serial
     export MPIR_CVAR_CH4_SHM_POSIX_RELEASE_GATHER_ENABLE=0

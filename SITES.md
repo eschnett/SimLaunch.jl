@@ -13,7 +13,7 @@ every key. [`README.md`](README.md) has an introduction and
   - [`[connect]`](#connect)
   - [`[paths]`](#paths)
   - [`[slurm]`](#slurm)
-  - [`[slurm.gpu]`](#slurmgpu)
+  - [Kinds of node: `[[slurm.nodes]]`](#kinds-of-node-slurmnodes)
   - [Queues](#queues)
   - [`[arch]`](#arch)
   - [`[julia]`](#julia)
@@ -111,8 +111,9 @@ host = "mycluster"                  # as in ~/.ssh/config
 code = "/home/me/simlaunch/studies"
 scratch = "/scratch/me/simlaunch/studies"
 
-[slurm]
-node = { cores = 64 }
+[[slurm.nodes]]
+name = "cpu"
+cores = 64
 queues = [{ partition = "batch", max_time = "24:00:00" }]
 
 [julia]
@@ -158,23 +159,55 @@ site's cores are counted when SimLaunch runs.
 |-----|---------|---------|
 | `account` | none | `--account` of every job |
 | `export_env` | `true` | `false`: `sbatch` hands the job nothing of the submitting shell's environment, so the script sets everything itself |
-| `partition` | `true` | `false`: the site chooses the partition; no `--partition` is written |
-| `max_time` | none | The longest job, for a site without `queues` |
-| `node` | | The CPU nodes; see below. A site needs `node`, `gpu` or both |
-| `queues` | none | The CPU jobs' [queues](#queues), in the order of preference |
+| `nodes` | required | The site's [kinds of node](#kinds-of-node-slurmnodes) |
 
-`node`:
+### Kinds of node: `[[slurm.nodes]]`
+
+A cluster has one or more kinds of node, each a table `[[slurm.nodes]]`
+with its shape, its architecture and its queues. A job runs on one kind. The
+order counts: the first CPU kind takes a CPU job, and the first GPU kind a
+GPU job, unless the job names another with `node_type` in its spec. The
+other kinds are used only when named, such as a single large-memory node or
+an older generation that is best avoided.
+
+```toml
+[[slurm.nodes]]                     # the default for CPU jobs
+name = "amd"
+cores = 64
+numa = 8
+header = ["--exclusive"]
+arch = "amd"
+queues = [{ partition = "amdq", max_time = "24:00:00" }]
+
+[[slurm.nodes]]                     # only for a spec with `node_type = "intel"`
+name = "intel"
+cores = 40
+numa = 2
+header = ["--exclusive"]
+arch = "intel"
+queues = [{ partition = "defq", max_time = "24:00:00" }]
+
+[[slurm.nodes]]                     # the default for GPU jobs
+name = "h200"
+gpus = { request = "--gres=gpu:h200:%d", cores = 8, mem = "64G", max = 8 }
+arch = "h200"
+queues = [{ partition = "h200q", max_time = "24:00:00" }]
+```
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `cores` | required | Cores of a node |
+| `name` | required | The kind's name, as a spec's `node_type` gives it |
+| `cores` | required for CPU nodes | Cores of a node |
 | `numa` | 1 | NUMA domains of a node, for `placement = "numa"` |
 | `whole` | `false` | `true`: a job gets whole nodes without asking for cores |
-| `header` | none | Further batch options of every CPU job, such as `["--exclusive", "--mem=0"]` |
+| `mem` | none | A note: SimLaunch does not read it |
+| `gpus` | none | Makes the kind GPU nodes; see below. A GPU kind has no `cores`, `numa`, `whole` or `mem` of its own |
+| `header` | none | Further batch options of every job on these nodes, such as `["--exclusive", "--mem=0"]` |
+| `arch` | | Its [architecture](#arch), where the profile has an `[arch]` table |
+| `queues` | none | Its [queues](#queues), in the order of preference |
+| `max_time` | none | The longest job, for a kind without `queues`: the site's submit filter chooses the partition, and no `--partition` is written |
 
-Other keys of `node`, such as `mem`, are notes: SimLaunch does not read them.
-
-### `[slurm.gpu]`
+`gpus`:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -183,13 +216,23 @@ Other keys of `node`, such as `mem`, are notes: SimLaunch does not read them.
 | `request_cores` | `true` | `false`: the site hands out the cores with the GPU; none are asked for |
 | `mem` | none | Memory per GPU, such as `"64G"`; without it none is asked for |
 | `max` | none | The most GPUs of a job |
-| `arch` | | The GPU nodes' architecture, where the profile has an `[arch]` table |
-| `queues` | none | The GPU jobs' [queues](#queues), in the order of preference |
+
+A queue belongs to one kind of node, and `--queue` names a queue of the
+job's kind. A partition that holds nodes of two kinds is listed with each,
+with a `header` such as `--exclude=cn112` that keeps a job on its own kind.
+
+`[[slurm.nodes]]` is a list, so a profile on top of another replaces all of
+its kinds of node when it gives any.
+
+Until 2026-11-19 a profile had one kind of CPU node in `[slurm] node` with
+its `queues`, and one kind of GPU node in `[slurm.gpu]`; a queue could name
+its own `arch` and be marked `on_request`. Such a profile is refused with a
+message.
 
 ### Queues
 
-A queue is a table in the list `queues`. A job takes the first that fits,
-or the one it names.
+A queue is a table in the list `queues` of a kind of node. A job takes the
+first that fits, or the one it names.
 
 | Key | Default | Meaning |
 |-----|---------|---------|
@@ -201,8 +244,6 @@ or the one it names.
 | `preempt` | `false` | Its jobs can be stopped at any time: only for a job with `checkpoints = true` |
 | `prefer` | `false` | A job with checkpoints takes this queue first |
 | `chain` | `true` | `false`: not for a chain of jobs |
-| `on_request` | `false` | Taken only by a job that names it |
-| `arch` | the site's | Its nodes' architecture, where it is not that of the site's other nodes |
 | `header` | none | Further batch options of a job in this queue |
 
 ### `[arch]`
@@ -218,11 +259,13 @@ amd = "znver2"                      # two CPU generations share Zen 2 code
 h200 = "native"
 ```
 
-`[julia] arch` names the CPU nodes' architecture, `[slurm.gpu] arch` the
-GPU nodes', and `[julia] login_arch` the login node's. Without `login_arch`
-the login node has an architecture of its own, and `prepare` compiles in a
-job on a compute node. Without `[arch]` the site has one architecture, and
-the login node compiles for all nodes. A target does not start with
+Each kind of node names its architecture as `arch`, and `[julia]
+login_arch` names the login node's. Several kinds can share one. Without
+`login_arch` the login node has an architecture of its own, and `prepare`
+compiles in a job on a node of each kind. Without `[arch]` the site has one
+architecture, and the login node compiles for all nodes. A site without
+`[slurm]`, such as the laptop, gives its architecture as `login_arch`,
+since its jobs run where it compiles. A target does not start with
 `generic`.
 
 ### `[julia]`
@@ -233,7 +276,7 @@ the login node compiles for all nodes. A target does not start with
 | `versions` | none | A table: a Julia version, as a spec's `julia` names it, and the binary that runs it, such as `"1.14" = "~/julia-1.14.0-beta1/bin/julia"`. A version that is not here runs as juliaup's channel, `<bin> +1.14`, so `bin` must be juliaup's launcher for it |
 | `depot` | `"~/.julia"` | The site's shared depot: packages, artifacts, registries. Compiled caches are the study's own |
 | `modules` | none | Environment modules that every job loads |
-| `arch`, `login_arch` | | See [`[arch]`](#arch) |
+| `login_arch` | | See [`[arch]`](#arch) |
 | `precompile_tasks` | Julia's | Parallel precompilation tasks on a shared login node |
 | `precompile_time` | `"0:30:00"` | Time limit of a precompile job on a compute node |
 | `compute_internet` | `true` | `false`: compute nodes have no network, so `prepare` fetches everything and jobs run offline |
@@ -250,6 +293,7 @@ Each recipe is a table `[mpi.<name>]`:
 | `launcher` | `"srun"` | `"srun"`, or `"mpiexec"`: the binary's own |
 | `launcher_args` | none | Arguments of the launcher, such as `["--mpi=pmix"]` |
 | `multi_node` | `true` under `srun` | Whether the recipe can start ranks on several nodes |
+| `implementation` | from `binary` | `"openmpi"` (Open MPI, HPC-X) or `"mpich"` (MPICH, Intel MPI, MVAPICH: Hydra's `mpiexec`). It says how an `mpiexec` is told the run's nodes and ranks per node. Known for `"jll"`, `"MPICH_jll"` and `"OpenMPI_jll"`; a recipe with `launcher = "mpiexec"` and `multi_node = true` needs it otherwise |
 | `modules` | none | Environment modules for a run with this recipe |
 | `julia` | `[julia] bin` | A Julia that can load the site's MPI |
 | `env` | none | Variables exported for a run with this recipe |

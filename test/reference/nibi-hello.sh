@@ -46,6 +46,13 @@ run_dir() {   # RUN-INDEX: the run's directory, which holds one directory per jo
     echo "$SCRATCH/$SPEC-${LABELS[$1]}"
 }
 
+# node_list N [SUFFIX]: the job's first N nodes, with commas between them and SUFFIX after each: where a
+# run under an mpiexec starts its ranks.
+node_list() {
+    scontrol show hostnames "$SLURM_JOB_NODELIST" |
+        awk -v n="$1" -v s="${2:-}" 'NR <= n { printf "%s%s%s", (NR > 1 ? "," : ""), $0, s }'
+}
+
 sw_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }
@@ -445,7 +452,7 @@ if [ "$USE_SLURM" = 0 ]; then echo $$ > "$SCRATCH/logs/$SPEC-$JOBID.pid"; fi
 
 # The environment. Everything is set here; nothing is taken from the
 # submitting shell.
-unset JULIA_LOAD_PATH JULIA_PROJECT
+unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET   # set below where the caches were compiled for a target
 export JULIA_DEPOT_PATH="$DEPOT:"         # the study's depot, then Julia's own; not ~/.julia
 export OPENBLAS_NUM_THREADS=1
 export JULIA_PKG_PRECOMPILE_AUTO=0

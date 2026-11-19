@@ -172,21 +172,21 @@ end
           [paths]
           code = "$(joinpath(root, "cluster", "code"))"
           scratch = "$(joinpath(root, "cluster", "scratch"))"
-          [slurm]
-          node = { cores = 4, header = ["--exclusive"] }
+          [[slurm.nodes]]
+          name = "cpu"
+          cores = 4
+          header = ["--exclusive"]
+          arch = "cpu"
           queues = [{ partition = "cpuq", max_time = "1:00:00" }, { partition = "preq", max_time = "1:00:00", preempt = true, prefer = true }]
-          [slurm.gpu]
-          request = "--gres=gpu:%d"
-          cores = 2
-          mem = "8G"
-          max = 2
+          [[slurm.nodes]]
+          name = "gpu"
+          gpus = { request = "--gres=gpu:%d", cores = 2, mem = "8G", max = 2 }
           arch = "gpu"
           queues = [{ partition = "gpuq", max_time = "1:00:00", max_gpus = 1 }]
           [julia]
           bin = "$(joinpath(Sys.BINDIR, "julia"))"
           depot = "$(joinpath(root, "depot"))"
           registry_update = false
-          arch = "cpu"
           [arch]                           # two kinds of node, and a login node that is neither
           cpu = "native"
           gpu = "native"
@@ -432,54 +432,93 @@ end
             """
         @testset "architectures" begin
             sym, fir, tri = load_site("kepler"), load_site("fir"), load_site("trillium")
+            # kinds of node: the first CPU kind and the first GPU kind are the defaults
+            @test [t.name for t in sym.types] == ["amd", "largemem", "intel", "h200"]
+            cpu, gpu = SimLaunch.node_type(sym, nothing; gpus = false), SimLaunch.node_type(sym, nothing; gpus = true)
+            @test cpu.name == "amd" && cpu.arch == "amd" && gpu.name == "h200" && gpu.arch == "h200" && sym.login_arch == "login"
+            @test sym.archs["amd"] == "znver2" && sym.archs["h200"] == "" && sym.archs["intel"] == "skylake-avx512"
             # nodes of one architecture share a depot; the login node compiles for the nodes that have its own
-            @test SimLaunch.site_arch(sym, false) == "amd" && SimLaunch.site_arch(sym, true) == "h200" && sym.login_arch == "login"
-            @test SimLaunch.cpu_target(sym, false) == "znver2" && SimLaunch.cpu_target(sym, true) == ""
-            @test SimLaunch.precompile_where(sym, false) == SimLaunch.precompile_where(sym, true) == "compute"
+            @test SimLaunch.precompile_where(sym, "amd") == SimLaunch.precompile_where(sym, "h200") == "compute"
             @test SimLaunch.study_depot(sym, "s", "h200") == "/home/user/studies/s/depot-h200"
-            @test SimLaunch.precompile_where(fir, false) == "login" && SimLaunch.precompile_where(fir, true) == "compute"
-            @test tri.archs == Dict("default" => "") && SimLaunch.precompile_where(tri, false) == "login"
-            # a queue can hold another kind of node: its own architecture, taken only by name; and its own batch options
+            @test SimLaunch.precompile_where(fir, "zen5") == "login" && SimLaunch.precompile_where(fir, "zen4") == "compute"
+            @test tri.archs == Dict("default" => "") && only(tri.types).arch == "default" && SimLaunch.precompile_where(tri, "default") == "login"
+            @test_throws "; it has amd, largemem, intel, h200" SimLaunch.node_type(sym, "arm"; gpus = false)
+            @test_throws "the h200 nodes of kepler are GPU nodes" SimLaunch.node_type(sym, "h200"; gpus = false)
+            @test_throws "the intel nodes of kepler are CPU nodes" SimLaunch.node_type(sym, "intel"; gpus = true)
+            # a job runs on the default kind, or on the kind it names, with that kind's queues, shape and architecture
             big = "name = \"big\"\nsite = \"kepler\"\ntime = \"2:00:00\"\n[[run]]\nlabel = \"a\"\ncmd = \"examples/hello.jl n=1\"\n"
             job(text; kw...) = resolve(TOML.parse(text), sym; study = "toy", project = "Toy", kw...)
             j = job(big)
-            @test j.queue.partition == "amdq" && SimLaunch.job_arch(j) == "amd" && only(combos(j)).target == "znver2"
+            @test j.type.name == "amd" && j.queue.partition == "amdq" && SimLaunch.job_arch(j) == "amd" && only(combos(j)).target == "znver2"
             @test occursin("#SBATCH --exclude=cn112\n", generate(j)) && occursin("/toy/depot-amd ", generate(j))
             pre = SimLaunch.precompile_script(sym, "toy", combos(j))
             @test occursin("#SBATCH --partition=amddebugq\n", pre) && occursin("#SBATCH --exclude=cn112\n", pre)
             @test occursin("DEPOT=/home/user/studies/toy/depot-amd\n", pre) && occursin("export JULIA_CPU_TARGET=znver2\n", pre)
-            j = job(big; queue = "largememq")
-            @test SimLaunch.job_arch(j) == "zen4c" && only(combos(j)).arch == "zen4c" && only(combos(j)).target == ""
+            named(t, text = big) = replace(text, "time =" => "node_type = \"$t\"\ntime =")
+            j = job(named("largemem"))
+            @test j.queue.partition == "largememq" && SimLaunch.job_arch(j) == "zen4c" && only(combos(j)).arch == "zen4c"
+            @test only(combos(j)).target == "" && only(combos(j)).type == "largemem"
             @test !occursin("--exclude", generate(j)) && occursin("/toy/depot-zen4c ", generate(j)) && !occursin("export JULIA_CPU_TARGET", generate(j))
-            @test job(replace(big, "time =" => "queue = \"largememq\"\ntime =")).queue.partition == "largememq"
             pre = SimLaunch.precompile_script(sym, "toy", combos(j))
-            @test occursin("#SBATCH --partition=largememq\n", pre) && !occursin("--exclude", pre)
+            @test occursin("#SBATCH --partition=largememq\n", pre) && !occursin("--exclude", pre) && occursin("#SBATCH --exclusive\n", pre)
             @test occursin("DEPOT=/home/user/studies/toy/depot-zen4c\n", pre)
+            @test occursin("node type: largemem\n", sprint(SimLaunch.describe, j))
+            # another shape: 40 cores and two NUMA domains
+            j = job(named("intel"))
+            @test j.queue.partition == "defq" && j.cores == 40 && only(j.runs).threads == 40 && SimLaunch.job_arch(j) == "intel"
+            @test occursin("export JULIA_CPU_TARGET=skylake-avx512", generate(j)) && occursin("/toy/depot-intel ", generate(j))
+            @test only(job(named("intel", replace(big, "cmd =" => "ranks = 2\nplacement = \"numa\"\ncmd ="))).runs).threads == 20
+            @test_throws "names no NUMA domains (`numa` of its largemem nodes)" job(named("largemem", replace(big, "cmd =" => "ranks = 2\nplacement = \"numa\"\ncmd =")))
+            # a queue belongs to its kind of node: another kind's is named by its kind
+            @test_throws "largememq is a queue of its largemem nodes: give `node_type = " job(big; queue = "largememq")
+            @test job(named("largemem"); queue = "largememq").queue.partition == "largememq"
             why = try job(replace(big, "2:00:00" => "30:00:00")); "" catch err; err.msg end
-            @test occursin("which no queue of kepler takes", why) && !occursin("largememq", why)
-            @test_throws "at most 1 nodes" job(replace(big, "time =" => "resources = { nodes = 2 }\ntime ="); queue = "largememq")
-            profile(text) = (write(joinpath(sites, "odd.toml"), "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n" *
-                                                                "[connect]\nhost = \"odd\"\n[slurm]\nnode = { cores = 4 }\n" * text);
-                             load_site("odd"))
-            @test profile("").arch == "default"
+            @test occursin("which no queue of kepler for its amd nodes takes", why) && !occursin("largememq", why)
+            @test_throws "at most 1 nodes" job(named("largemem", replace(big, "time =" => "resources = { nodes = 2 }\ntime =")))
+            @test_throws "has no kind of node" job(named("arm"))
+            # profiles
+            head = "name = \"odd\"\n[paths]\ncode = \"/c\"\nscratch = \"/s\"\n[connect]\nhost = \"odd\"\n"
+            profile(text; node = "") = (write(joinpath(sites, "odd.toml"), head * "[[slurm.nodes]]\nname = \"n\"\ncores = 4\n" * node * text);
+                                        load_site("odd"))
+            @test only(profile("").types).arch == "default"
             @test_throws "`precompile_on` is gone" profile("[julia]\nprecompile_on = \"compute\"\n")
             @test_throws "`cpu_target` is gone" profile("[julia]\ncpu_target = \"generic\"\n")
-            @test_throws "has no [arch] table" profile("[julia]\narch = \"zen\"\n")
-            @test_throws "must name one of the architectures" profile("[arch]\nzen = \"znver2\"\n")
-            @test_throws "in [arch]; it has zen" profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen3\"\n")
-            @test_throws "unknown key `arhc`" profile("queues = [{ partition = \"p\", arhc = \"zen\" }]\n")
-            @test_throws "queue p: no architecture" profile("queues = [{ partition = \"p\", arch = \"zen\" }]\n")
+            @test_throws "[julia]: `arch` is gone" profile("[julia]\narch = \"zen\"\n")
+            @test_throws "has no [arch] table" profile(""; node = "arch = \"zen\"\n")
+            @test_throws "`arch` must name one of the architectures in [arch]: zen" profile("[arch]\nzen = \"znver2\"\n")
+            @test_throws "`arch` must name one of the architectures" profile("[arch]\nzen = \"znver2\"\n"; node = "arch = \"zen3\"\n")
+            @test_throws "queue p: unknown key `arhc`" profile(""; node = "queues = [{ partition = \"p\", arhc = \"zen\" }]\n")
+            @test_throws "queue p: `arch` is gone" profile(""; node = "queues = [{ partition = \"p\", arch = \"zen\" }]\n")
+            @test_throws "queue p: `on_request` is gone" profile(""; node = "queues = [{ partition = \"p\", on_request = true }]\n")
+            @test_throws "`max_time` is for nodes without queues" profile(""; node = "max_time = \"1:00:00\"\nqueues = [{ partition = \"p\" }]\n")
+            @test_throws "node type n: unknown key `cpus`" profile(""; node = "cpus = 4\n")
+            @test_throws "two kinds of node in [[slurm.nodes]] have the same name" profile("[[slurm.nodes]]\nname = \"n\"\ncores = 8\n")
+            @test_throws "gives its `cores` per GPU" profile("[[slurm.nodes]]\nname = \"g\"\ncores = 8\ngpus = { request = \"--gpus=%d\", cores = 4 }\n")
+            @test_throws "needs a %d" profile("[[slurm.nodes]]\nname = \"g\"\ngpus = { request = \"--gpus\", cores = 4 }\n")
+            g = profile("[[slurm.nodes]]\nname = \"g\"\ngpus = { request = \"--gpus=%d\", cores = 4 }\nmax_time = \"2:00:00\"\n")
+            @test SimLaunch.node_type(g, nothing; gpus = true).gpus.cores == 4 && isempty(SimLaunch.node_type(g, nothing; gpus = true).queues)
+            write(joinpath(sites, "odd.toml"), head * "[slurm]\nnode = { cores = 4 }\nqueues = [{ partition = \"p\" }]\n")
+            @test_throws "`node`, `queues` belong to the form of a profile before 2026-11-19" load_site("odd")
+            write(joinpath(sites, "odd.toml"), head * "[slurm]\naccount = \"a\"\n")
+            @test_throws "[slurm] needs its kinds of node" load_site("odd")
             # MPI recipes: a default, and a binary by its name in MPIPreferences
             @test profile("[mpi]\ndefault = \"a\"\n[mpi.a]\nbinary = \"MPIABI_jll\"\n").mpi_default == "a"
             @test_throws "`default` names one of the recipes" profile("[mpi]\ndefault = \"b\"\n[mpi.a]\nbinary = \"jll\"\n")
             @test_throws "`binary` is" profile("[mpi.a]\nbinary = \"mpich\"\n")
+            # an mpiexec on several nodes: its implementation, from the binary or given
+            several = "launcher = \"mpiexec\"\nmulti_node = true\n"
+            @test profile("[mpi.a]\nbinary = \"jll\"\n" * several).mpi["a"].implementation == "mpich"
+            @test profile("[mpi.a]\nbinary = \"system\"\nimplementation = \"openmpi\"\n" * several).mpi["a"].implementation == "openmpi"
+            @test_throws "needs `implementation`" profile("[mpi.a]\nbinary = \"system\"\n" * several)
+            @test_throws "`implementation` is" profile("[mpi.a]\nbinary = \"system\"\nimplementation = \"hydra\"\n" * several)
+            @test profile("[mpi.a]\nbinary = \"system\"\nlauncher = \"mpiexec\"\n").mpi["a"].implementation == ""   # one node
             @test sym.mpi_default == "mpiabi" && sym.mpi["mpiabi"].preferences["abi"] == "MPIABI" && isempty(sym.mpi["hpcx"].preferences)
-            @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n[julia]\narch = \"zen\"\n")
-            odd = profile("[arch]\nzen = \"znver2\"\n[julia]\narch = \"zen\"\nlogin_arch = \"zen\"\n")
-            @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, false) == "login"
+            @test_throws "is a JULIA_CPU_TARGET" profile("[arch]\nzen = \"znver2 generic\"\n"; node = "arch = \"zen\"\n")
+            odd = profile("[arch]\nzen = \"znver2\"\n[julia]\nlogin_arch = \"zen\"\n"; node = "arch = \"zen\"\n")
+            @test odd.archs == Dict("zen" => "znver2") && SimLaunch.precompile_where(odd, "zen") == "login"
             # profiles: the user's come before the package's, and one with a `base` holds only what differs
             tri = load_site("trillium")
-            @test tri.account == "def-user" && tri.code == "/home/user/studies" && tri.cores == 192 && tri.mpi_default == "mpiabi"
+            @test tri.account == "def-user" && tri.code == "/home/user/studies" && only(tri.types).cores == 192 && tri.mpi_default == "mpiabi"
             @test tri.mpi["mpiabi"].modules == ["StdEnv/2023"] && isempty(tri.mpi["mpiabi"].unset)
             @test tri.mpi["mpiabi"].preferences["abi"] == "MPIABI" && startswith(tri.mpi["mpiabi"].preferences["mpiexec"], "/home/user/")
             @test SimLaunch.read_profile("trillium")[2] == [joinpath(sites, "trillium.toml"), joinpath(pkgdir(SimLaunch), "sites", "trillium.toml")]
@@ -549,7 +588,7 @@ end
             @test_throws "at most 1:00:00" job("kepler"; text = replace(gpu_spec, "0:30:00" => "2:00:00"), queue = "h200debugq")
             @test job("kepler"; text = replace(gpu_spec, "0:30:00" => "2:00:00")).queue.partition == "h200q"
             @test_throws "pre-emptible" job("kepler"; queue = "h200preq")
-            @test_throws "for GPU jobs" job("kepler"; queue = "amdq")
+            @test_throws "for its h200 nodes; its queues: h200debugq, h200q, h200preq. amdq is a queue of its amd nodes, which are CPU nodes" job("kepler"; queue = "amdq")
             @test_throws "GPU jobs only" job("trillium-gpu"; text = replace(gpu_spec, "resources = { gpus = 2 }" => ""))
             @test_throws "has none" job("trillium"; text = replace(gpu_spec, "site.nibi" => "site.trillium",
                                                                     "mode = \"parallel\"" => "resources = { gpus = 1 }"))
@@ -583,12 +622,16 @@ end
             @test !iswritable(joinpath(dir, "result.csv")) && !iswritable(dir)   # immutable once the job has ended
             # the snapshot in the cache is untouched; the site resolved its own manifest
             @test !ispath(joinpath(ENV["SIMLAUNCH_CACHE"], "toy", "src", "Toy", "Manifest.toml"))
-            # a second job of the same run gets a new directory
-            sleep(1.1)
+            # a second job of the same run gets a new directory; a third, in the same second, a job of its own
             jobid2 = submit("toy", f; site = "local", io = devnull)
-            wait_for(scratch, ["hello-n3", "hello-n5"])
-            sleep(1)
-            @test isdir(joinpath(scratch, "hello-n3", "002-$jobid2")) && isdir(dir)
+            jobid3 = submit("toy", f; site = "local", io = devnull)
+            @test jobid3 != jobid2 && jobid2 != jobid
+            t0 = time()
+            ended(id) = startswith(try read(joinpath(scratch, "hello-n5", ".simlaunch-job"), String) catch; "" end, "$id ")
+            dirs_of(id) = filter(n -> endswith(n, "-$id"), readdir(joinpath(scratch, "hello-n3")))
+            while !(length(dirs_of(jobid3)) == 1 && ended(jobid3)) && time() - t0 < 120; sleep(0.3); end
+            @test length(dirs_of(jobid2)) == length(dirs_of(jobid3)) == 1 && isdir(dir)
+            @test length(filter(n -> startswith(n, "hello-") && endswith(n, ".sh"), readdir(joinpath(study_code(load_site("local"), "toy"), "jobs")))) == 3
         end
 
         @testset "a run's Julia version" begin
@@ -612,7 +655,7 @@ end
             # an environment of its own, written by prepare: its manifest is for that Julia
             env = joinpath(code, "envs", "default-julia9.9")
             @test isfile(joinpath(env, "Project.toml")) && isfile(joinpath(env, "Manifest.toml"))
-            marker = SimLaunch.prepared_file(loc, "toy", loc.arch)
+            marker = SimLaunch.prepared_file(loc, "toy", only(loc.types).arch)
             @test "envs/default-julia9.9\tjulia $VERSION" in readlines(marker)
             # compiled by another build of that Julia, as when a juliaup channel has moved on: not prepared
             write(marker, replace(read(marker, String), "envs/default-julia9.9\tjulia $VERSION" => "envs/default-julia9.9\tjulia 9.9.0"))
@@ -754,6 +797,26 @@ end
             @test cancel("toy", f; site = "local", message = "both jobs", poll = 0.3, io = devnull) == ["can-long", "can-next"]
             long = TOML.parsefile(joinpath(scratch, "can-long", "simwatch.toml"))
             @test long["status"] == "cancelled" && long["message"] == "both jobs"
+            # a spec with a run this site cannot take: prepared and submitted with --run, and cancelled all the same
+            odd = spec(replace(spec_text("""
+                                         [[run]]
+                                         label = "small"
+                                         cmd = "examples/hello.jl n=2 sleep"
+                                         threads = 1
+
+                                         [[run]]
+                                         label = "huge"
+                                         cmd = "examples/hello.jl n=2"
+                                         threads = 100000
+                                         """), "name = \"hello\"" => "name = \"part\""))
+            @test_throws "100000 threads" prepare("toy"; site = "local", specs = [odd], io = devnull)
+            @test_throws "exactly one `--spec`" prepare("toy"; site = "local", specs = [odd, f], only_runs = ["small"], io = devnull)
+            redirect_stdout(devnull) do
+                @test SimLaunch.command(["prepare", "toy", "--site", "local", "--spec", odd, "--run", "small"]) == 0
+            end
+            part = submit("toy", odd; site = "local", only_runs = ["small"], io = devnull)
+            while !isfile(joinpath(scratch, "part-small", "001-$part", "result.csv")); sleep(0.2); end
+            @test cancel("toy", odd; site = "local", poll = 0.3, io = devnull) == ["part-small"]
         end
 
         @testset "wait" begin
@@ -805,23 +868,17 @@ end
             @test record["job_id"] == jobid && record["run"] == "tab-n2" && !isempty(record["cpu"]) && !isempty(record["host"])
             log = read(joinpath(scratch, "logs", "tab-$jobid.out"), String)
             @test occursin("jobs $jobid\nno note\nn,answer\n2,5\nn,answer\n4,9\n", log)
-            # the command again, from the snapshot and from the checkout as it is now
+            # the command again, over all runs and over one
             out = IOBuffer()
             again = after("toy", f; site = "local", io = out)
             text = String(take!(out))
-            @test occursin("PROJECT is the study's snapshot", text) && occursin("jobs $jobid\nno note\nn,answer\n2,5\nn,answer\n4,9\n", text)
+            @test occursin("jobs $jobid\nno note\nn,answer\n2,5\nn,answer\n4,9\n", text)
             @test read(again, String) * "log: $again\n" == text
-            note = joinpath(toy, "examples", "note.txt")
-            write(note, "a note\n")
             sleep(1.1)                                                           # a log's name holds the second
-            after("toy", f; site = "local", only_runs = ["n4"], checkout = true, io = out)
-            rm(note)
+            after("toy", f; site = "local", only_runs = ["n4"], io = out)
             text = String(take!(out))
-            @test occursin("PROJECT is the checkout $(realpath(toy))", text) && occursin("uncommitted changes", text)
-            @test occursin("jobs $jobid\na note\nn,answer\n4,9\n", text) && !occursin("2,5", text)
-            copy = only(readdir(joinpath(scratch, "after"); join = true))
-            @test !iswritable(joinpath(copy, "Toy", "examples", "note.txt")) && !ispath(joinpath(copy, "Toy", ".git"))
-            @test !ispath(joinpath(code, "src", "Toy", "examples", "note.txt"))  # the snapshot is as it was
+            @test occursin("jobs $jobid\nno note\nn,answer\n4,9\n", text) && !occursin("2,5", text)
+            @test_throws "unknown option --checkout" SimLaunch.command(["after", "toy", f, "--site", "local", "--checkout"])
             @test_throws "no [after] table" after("toy", spec(spec_text(RUNS)); site = "local", io = devnull)
             @test SimLaunch.command(["after", "toy", f, "--site", "local"]) == 0
         end
@@ -1016,6 +1073,27 @@ end
             numactl(8)
             @test placed("0") == (0, "--cpunodebind=0-3 --membind=0-3 the run\n")
             @test placed("1") == (0, "--cpunodebind=4-7 --membind=4-7 the run\n")
+            # an mpiexec on several nodes is told the run's nodes and its ranks on each, which the header's
+            # tasks per node do not say: Open MPI's by --host; a rank's place on its node is its local rank
+            cmd = SimLaunch.run_command(j, j.runs[2])
+            @test occursin("mpiexec.jl --bind-to none --host \"\$(node_list 2 :8)\" -n 16 bash -c 'l=\${OMPI_COMM_WORLD_LOCAL_RANK:-\${MPI_LOCALRANKID:-0}}; ", cmd)
+            j3 = job(replace(nested, "ranks = 16" => "ranks = 8"), "kepler")                  # 4 on a node of the 8 the header has
+            @test j3.tasks == 8 && occursin("--host \"\$(node_list 2 :4)\" -n 8 ", SimLaunch.run_command(j3, j3.runs[2]))
+            j3 = job(replace(nested, "ranks = 16" => "ranks = 4\nnodes = 1"), "kepler")       # one of the job's two nodes
+            @test occursin("--host \"\$(node_list 1 :4)\" -n 4 ", SimLaunch.run_command(j3, j3.runs[2]))
+            # Hydra's mpiexec, and the nodes as the job's script finds them
+            write(joinpath(sites, "kepler-hydra.toml"), "base = \"kepler\"\nname = \"kepler-hydra\"\n" *
+                  "[mpi.mpiabi]\nbinary = \"jll\"\nmodules = []\nlauncher_args = []\nimplementation = \"mpich\"\n")
+            j3 = job(replace(nested, "site = \"kepler\"" => "site = \"kepler-hydra\""), "kepler-hydra")
+            @test occursin("mpiexec.jl -ppn 8 -hosts \"\$(node_list 2)\" -n 16 ", SimLaunch.run_command(j3, j3.runs[2]))
+            rm(joinpath(sites, "kepler-hydra.toml"))
+            write(joinpath(fake, "scontrol"), "#!/bin/bash\n[ \"\$*\" = \"show hostnames cn[095-097]\" ] && printf 'cn095\\ncn096\\ncn097\\n'\n")
+            chmod(joinpath(fake, "scontrol"), 0o755)
+            nodes(args) = withenv("PATH" => fake * ":" * ENV["PATH"], "SLURM_JOB_NODELIST" => "cn[095-097]") do
+                helpers = joinpath(dirname(@__DIR__), "templates", "job_helpers.sh")
+                read(`bash -c ". $(SimLaunch.q(helpers)); node_list $args"`, String)
+            end
+            @test nodes("2 :8") == "cn095:8,cn096:8" && nodes("1") == "cn095" && nodes("3") == "cn095,cn096,cn097"
             # a run without ranks keeps to one domain
             @test j.runs[3].threads == 8
             bind = match(r"bash -c ('[^']*') numa ", SimLaunch.run_command(j, j.runs[3]))[1]

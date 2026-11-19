@@ -188,7 +188,7 @@ The profile below is the two files merged, as one user sees it.
 
 A profile has six tables. `[connect]` says how to reach the site and how to
 check first; `[paths]` where code and output go; `[slurm]` the account and the
-queue rules; `[julia]` which Julia, which modules and where to precompile;
+kinds of node with their queues; `[julia]` which Julia, which modules and where to precompile;
 `[mpi.<recipe>]` how MPI runs are set up and started; `[env]` what every job
 exports. Trillium's CPU profile, abbreviated:
 
@@ -207,7 +207,12 @@ scratch = "/scratch/USER/simlaunch/studies"
 [slurm]
 account = "def-NAME"
 export_env = false                     # sbatch runs with --export=NONE
-node = { cores = 192, numa = 8, mem = "767000M", whole = true }
+
+[[slurm.nodes]]                        # its one kind of node
+name = "cpu"
+cores = 192
+numa = 8
+whole = true
 queues = [                             # in the order of preference
   { partition = "debug",   max_time = "1:00:00",  max_nodes = 4, one_at_a_time = true },
   { partition = "compute", min_time = "0:15:00", max_time = "24:00:00" },
@@ -233,30 +238,46 @@ JULIA_PKG_OFFLINE = "true"
 ```
 
 The other profiles differ where the table above says they do. Symmetry's
-names two architectures, neither of them the login node's, which makes
-`prepare` submit a short precompile job for each, and per-partition rules: `amddebugq` up to an hour, `amdq` beyond,
-`h200preq` only for runs that checkpoint (`preempt = true`), and `h200debugq`
-never chained (`chain = false`).
-Nibi's and Fir's have `partition = false`, since their submit filters choose.
-`local` has no `[slurm]` table at all: its jobs run as background processes
-under the same layout.
+has several kinds of node, none of them with the login node's architecture,
+which makes `prepare` submit a short precompile job for each it needs, and
+per-partition rules: `amddebugq` up to an hour, `amdq` beyond, `h200preq`
+only for runs that checkpoint (`preempt = true`), and `h200debugq` never
+chained (`chain = false`). Nibi's and Fir's kinds of node have no queues
+but a `max_time`, since their submit filters choose the partition. `local`
+has no `[slurm]` table at all: its jobs run as background processes under
+the same layout.
 
-A site's GPUs are a table of their own, `[slurm.gpu]`: the batch option that
-asks for them, the cores and memory that go with each GPU, the most a job
-gets, and the GPU queues. Symmetry's:
+**Kinds of node.** A cluster's nodes come in kinds that differ in their
+shape and their CPU: Symmetry has AMD nodes of 64 cores and 8 NUMA domains,
+one AMD node of another generation (cn112) with 384 GB, Intel nodes of 40
+cores and 2 domains, H200 nodes and RTX 2080 nodes. A profile lists them as
+`[[slurm.nodes]]`, in the order of preference, each with its name, its
+shape (`cores`, `numa`, `whole`, `header`, or for GPU nodes a `gpus` table
+with the batch option, the cores and memory that go with each GPU and the
+most a job gets), its architecture and its queues. A job runs on one kind:
+the first CPU kind for a CPU job and the first GPU kind for a GPU job,
+unless the spec names another with `node_type`. Symmetry's GPU nodes:
 
 ```toml
-[slurm.gpu]                            # H200, 141 GB
-request = "--gres=gpu:h200:%d"
-cores = 8                              # per GPU
-mem = "64G"                            # per GPU; always given
-max = 8
+[[slurm.nodes]]                        # H200, 141 GB
+name = "h200"
+gpus = { request = "--gres=gpu:h200:%d", cores = 8, mem = "64G", max = 8 }
+arch = "h200"
 queues = [
   { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },
   { partition = "h200q",      max_time = "24:00:00" },
   { partition = "h200preq",   max_time = "24:00:00", preempt = true },
 ]
 ```
+
+Until 2026-11-19 a profile had one kind of CPU node (`[slurm] node`) and one
+of GPU node (`[slurm.gpu]`), and a queue could name another architecture
+(`arch`) and be taken only by name (`on_request`), which is how cn112 was
+described. That could not describe the Intel nodes, whose cores and NUMA
+domains differ too, and a job sent to such a queue with `--queue` could not
+be prepared for, since `prepare` had no queue. A queue now belongs to one
+kind of node, and a kind other than the first is used only when named, so
+`on_request` is not needed.
 
 An MPI recipe names the binary (`jll`: MPICH_jll; `system`: the site's MPI),
 the launcher (`srun` with its arguments, or `mpiexec`: the binary's own,
@@ -268,21 +289,15 @@ ranks, for one node and for GPU jobs) and `mpiabi` (HPC-X through mpi_abi_wrappe
 
 **Architectures.** A site's nodes are not one CPU type, and a compiled cache
 is for one. A profile names its architectures in `[arch]`, each with its
-`JULIA_CPU_TARGET` (`"native"` for the node's own CPU), and says which one
-the CPU nodes (`[julia] arch`), the GPU nodes (`[slurm.gpu] arch`) and the
-login node (`[julia] login_arch`) have:
+`JULIA_CPU_TARGET` (`"native"` for the node's own CPU); each kind of node
+names its own as `arch`, and the login node as `[julia] login_arch`:
 
 ```toml
 [arch]
 amd = "znver2"                         # Symmetry's EPYC 7532 and 7543 nodes
-zen4c = "native"                       # cn112, an EPYC 8534P, through largememq
+zen4c = "native"                       # cn112, an EPYC 8534P, in largememq
+intel = "skylake-avx512"               # its Xeon Gold 6148 nodes
 h200 = "native"                        # its H200 nodes: Sapphire Rapids
-
-[julia]
-arch = "amd"
-
-[slurm.gpu]
-arch = "h200"
 ```
 
 - A study has one depot of compiled caches per architecture, and a job sees
@@ -299,17 +314,14 @@ arch = "h200"
   vendor can share one: Zen 2 code serves Zen 3; Sapphire Rapids code
   should serve Granite Rapids. What a newer node loses that way is not
   measured, so Nibi and Fir keep an architecture per node type for now.
-- A queue can hold another kind of node than the site's others, and then
-  names its own architecture: `{ partition = "largememq", on_request =
-  true, arch = "zen4c" }`. A precompile job for an architecture runs in a
-  queue whose nodes have it. `on_request` keeps the queue out of the choice
-  by rule: only a job that names it gets it. A queue's `header` adds batch
-  options to every job in it.
+- A precompile job for an architecture runs on the kind of node the jobs
+  will use, in the first of its queues that fits. A queue's `header` adds
+  batch options to every job in it.
 - Symmetry's AMD partitions list cn112, which is another machine: Zen 4c
   with AVX-512, 384 GB and fewer NUMA domains, where the others are Zen 2
   and Zen 3 with 256 GB and 8 domains. The profile keeps every job in them
-  off cn112 (`header = ["--exclude=cn112"]`) and describes `largememq`,
-  which holds only cn112, for the jobs that want it. The AMD architecture
+  off cn112 (`header = ["--exclude=cn112"]`) and describes cn112 as a kind
+  of node of its own, `largemem`, with `largememq`, which holds only it. The AMD architecture
   is then Zen 2 code alone. Partitions without cn112 would be the simpler
   fix; that is the site's to make.
 - A target does not start with `generic`. A node that cannot run the code
@@ -609,10 +621,12 @@ runs in the study's output directory, with `PROJECT` and
 `SIMLAUNCH_JOBDIRS` (this job's directories) exported, and its output goes
 to the job's log. `simlaunch after <study> <spec>` runs the command again
 on the login node over each run's newest job directory, for a table that
-was wrong or is wanted again. Its `--checkout` takes `PROJECT` from a
-read-only copy of the project as it is on the laptop now, kept in the
-study's output directory, and the log says so: the study's snapshot, which
-is what the jobs ran, is not touched.
+is wanted again. A script that was wrong when the snapshot was taken runs,
+corrected, on the laptop over what `fetch` brought back. Until 2026-11-19
+`after --checkout` ran it on the site from a copy of the project as it was on
+the laptop; that was dropped, since only a shell command could run there
+without instantiating the copy, and its output came from code in no
+snapshot.
 
 **Environments.** `env` names kinds joined by `+`: `cuda` and `metal` add
 the device package, `test` the project's test dependencies, `mpi` MPI.jl set
@@ -655,6 +669,33 @@ nodes; `resources.nodes` above 1 restricts the queue choice to queues that
 allow it (on Symmetry `amdq`, since `amddebugq` takes one node). A recipe
 that starts its ranks with `srun` is refused in a GPU job, whose allocation
 is one task; such a job uses a recipe with the binary's own `mpiexec`.
+
+A run's ranks go to the job's first `nodes` nodes, `ranks / nodes` on each.
+`srun` is told so by `--nodes` and `--cpus-per-task`. An `mpiexec` is told
+in its own words, which the recipe's `implementation` says: Open MPI's
+`--host n1:R,n2:R`, Hydra's `-ppn R -hosts n1,n2`, with the nodes from
+`scontrol show hostnames` when the job runs. Until 2026-11-19 an `mpiexec`
+was given only `-n`, and Open MPI filled each node's Slurm slots in turn:
+right for the run with the most ranks on a node, which sets
+`--ntasks-per-node`, and wrong for a run with fewer, or on fewer nodes than
+the job. A rank's place on its node comes from Open MPI's
+`OMPI_COMM_WORLD_LOCAL_RANK` or Hydra's `MPI_LOCALRANKID`; Hydra's
+`PMI_RANK`, used before, counts over all nodes.
+
+This ran on 2026-11-19 with a probe study on two nodes, each rank printing its
+node and the cores `numactl` bound it to. Every run placed every rank right,
+each on its own NUMA domains:
+
+| Site | Job | Runs |
+| --- | --- | --- |
+| Symmetry | 606150 (cn102, cn103) | `mpiabi` and `hpcx` (HPC-X's `mpiexec`) 2×8, 2×4, 1×4; `jll` (`srun`) 2×4 |
+| Nibi | 27992789 (c269, c522) | the wrapper's `mpiexec` 2×6, 2×3, 1×3; `mpiabi` (`srun`) 2×6; `jll` 2×3 |
+| Trillium | 2892603 (tri0096, tri0291) | the wrapper's `mpiexec` 2×8, 2×4, 1×4; `mpiabi` (`srun`) 2×8; `jll` 2×4 |
+
+On the Alliance sites the `mpiexec` recipe was a probe in a copy of the
+profile (`implementation = "openmpi"`, `StdEnv/2023`); their profiles keep
+`srun`. Fir's job (4584316) waited behind a maintenance reservation. Hydra
+across nodes has not run: no profile has such a recipe.
 
 **The default recipe.** A profile's `[mpi]` table names a default, and a run
 with `ranks` that names no recipe gets it, so a spec without `mpi` runs on
@@ -812,13 +853,13 @@ environment, so they differ in the package only.
   that starts only after this job has ended
   ([Immutable outputs and restarts](#immutable-outputs-and-restarts)).
 
-**Queue choice.** The tool picks the first queue in the profile's order that
-fits the spec: its time, its nodes or GPUs, and three rules a queue can
+**Queue choice.** The tool picks the first queue of the job's kind of node,
+in the profile's order, that fits the spec: its time, its nodes or GPUs, and three rules a queue can
 carry. `one_at_a_time`: skipped while the user has a job there, which
 `submit` asks the site; `preempt`: only for a job with checkpoints;
 `prefer`: taken first by a job with checkpoints (`h200preq`, since `h200q`
 is often full; not `amdpreq`); `chain = false`: not for a job with
-checkpoints; `on_request`: never chosen, only named (`largememq`); `min_gpus`: a
+checkpoints; `min_gpus`: a
 queue for whole GPU nodes takes no smaller job. Trillium's GPU cluster has
 such queues: a job with all 4 GPUs of a node is refused in `debug` and
 `compute` and belongs in `debug_full_node` (1 hour) or `compute_full_node`,

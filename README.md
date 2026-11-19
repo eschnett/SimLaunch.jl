@@ -144,7 +144,7 @@ GPU job follow from the site's profile.
 `cmd` is a script of the project and its arguments, started in the run's job
 directory. Per run: `threads` (a list makes one run per count), `julia` (a
 Julia version or juliaup channel, such as `"1.13"`), `julia_args` and `vars`. `submit --run <label>` submits only the named runs, for a site
-that cannot hold them all. `submit` refuses a job that asks for more cores than its
+that cannot hold them all, and `prepare --run` prepares just those. `submit` refuses a job that asks for more cores than its
 allocation has, or more time or nodes than its queue allows.
 
 The queue is the first in the site's profile that fits the job; `--queue`

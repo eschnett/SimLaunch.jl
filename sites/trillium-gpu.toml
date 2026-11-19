@@ -20,11 +20,10 @@ scratch = "<a directory for the runs' output, such as /scratch/USER/simlaunch/st
 account = "<your Slurm account, such as def-NAME>"
 export_env = false                     # sbatch runs with --export=NONE
 
-[slurm.gpu]                            # H100, 80 GB
-request = "--gpus-per-node=%d"
-cores = 24                             # per GPU, with 192000 M; given, not asked for
-request_cores = false
-max = 4
+[[slurm.nodes]]                        # H100, 80 GB
+name = "h100"
+# per GPU 24 cores, with 192000 M; given, not asked for
+gpus = { request = "--gpus-per-node=%d", cores = 24, request_cores = false, max = 4 }
 # A job with all 4 GPUs of a node is a whole-node job: the site takes it only in the
 # *_full_node partitions, and a smaller job only in the others.
 queues = [                             # in the order of preference

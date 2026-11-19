@@ -51,7 +51,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 
 | In the script | In SimLaunch |
 | --- | --- |
-| `#SBATCH --partition`, `--time`, `--nodes`, `--gres`, `--mem`, `--exclusive`, `--account` | `time` and `resources` in the site table. The partition is chosen by rule, or `queue`. Cores, memory, account and `--exclusive` come from the site's profile |
+| `#SBATCH --partition`, `--time`, `--nodes`, `--gres`, `--mem`, `--exclusive`, `--account` | `time` and `resources` in the site table. The partition is chosen by rule, or `queue`; a partition of another kind of node than the site's default (Symmetry's Intel nodes, cn112) needs `node_type` too. Cores, memory, account and `--exclusive` come from the site's profile |
 | Any other `#SBATCH` line | `sbatch_args` |
 | `--nodelist` | `node` |
 | `--exclude`, `--constraint` | `sbatch_args = ["--exclude=cn099"]`. A profile can exclude a node for every job of a queue |
@@ -73,7 +73,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 | `perf stat …`, `taskset …` before `julia` | `prefix` |
 | A baseline checkout beside the new one (`TREEAMR_BASE`) | a variant: `snapshot --variant base=<directory>`, then `variant = "base"` in a run |
 | `$OUT/<stem>.tsv`, one output file per run | each run's `output.log`, in its own job directory; files the script writes land there too |
-| A table printed at the end (`awk` over the outputs) | `[after] cmd`. `simlaunch after` prints it again later, with `--checkout` from a corrected script |
+| A table printed at the end (`awk` over the outputs) | `[after] cmd`. `simlaunch after` prints it again later; a corrected script runs on the laptop over what `simlaunch fetch` brought back |
 | The project's copy of `simwatch.sh`, stages | nothing: every run has a SimWatch file, written by the job |
 | `rsync` of the checkout to the cluster, a fixed tree there | `snapshot` and `prepare` |
 | `--requeue`, `--open-mode=append`, a resume-from-checkpoint option | `checkpoints = true` and `[restart]`; see "Restarts" in `SPEC.md` |

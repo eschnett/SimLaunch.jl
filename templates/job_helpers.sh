@@ -4,6 +4,13 @@ run_dir() {   # RUN-INDEX: the run's directory, which holds one directory per jo
     echo "$SCRATCH/$SPEC-${LABELS[$1]}"
 }
 
+# node_list N [SUFFIX]: the job's first N nodes, with commas between them and SUFFIX after each: where a
+# run under an mpiexec starts its ranks.
+node_list() {
+    scontrol show hostnames "$SLURM_JOB_NODELIST" |
+        awk -v n="$1" -v s="${2:-}" 'NR <= n { printf "%s%s%s", (NR > 1 ? "," : ""), $0, s }'
+}
+
 sw_now() {
     date -u +%Y-%m-%dT%H:%M:%SZ
 }

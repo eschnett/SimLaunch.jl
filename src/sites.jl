@@ -10,8 +10,6 @@ struct Queue
     preempt::Bool                     # its jobs can be stopped at any time: only for jobs with checkpoints
     prefer::Bool                      # a pre-emptible queue that a job with checkpoints takes first
     chain::Bool                       # false: not for a chain of jobs
-    on_request::Bool                  # taken only when it is named, never by rule
-    arch::Union{String,Nothing}       # its nodes' architecture, where it is not that of the site's other nodes
     header::Vector{String}            # further batch options of a job in this queue
     min_gpus::Union{Int,Nothing}      # a queue for whole GPU nodes takes no smaller job
 end
@@ -23,6 +21,7 @@ struct MPIRecipe
     launcher::String                  # "srun", or "mpiexec": the binary's own
     launcher_args::Vector{String}
     multi_node::Bool
+    implementation::String            # "openmpi" or "mpich" (Hydra's mpiexec), or "": how an mpiexec is told its nodes
     modules::Vector{String}
     julia_bin::Union{String,Nothing}  # a Julia that can load the site's MPI
     preferences::Dict{String,Any}     # for MPIPreferences.use_system_binary
@@ -30,16 +29,33 @@ struct MPIRecipe
     unset::Vector{String}             # its keys that still hold a placeholder: not usable until they are set
 end
 
-"What a GPU job is given on a site, per GPU."
+"What a GPU job is given on a kind of GPU node, per GPU."
 struct GPUs
     request::String                   # the batch option; %d is the number of GPUs
     cores::Int                        # per GPU
     request_cores::Bool               # false: the site hands them out with the GPU
     mem::Union{String,Nothing}        # per GPU, such as "64G"; nothing: not asked for
     max::Union{Int,Nothing}           # per job
-    queues::Vector{Queue}             # in the order of preference
-    arch::String                      # the GPU nodes' architecture: a key of the site's `archs`
 end
+
+"""
+One kind of node of a site: its shape, its architecture and its queues. A
+job runs on one kind. A CPU kind has `cores`; a GPU kind has `gpus`, and a
+GPU job gets cores and memory per GPU.
+"""
+struct NodeType
+    name::String
+    cores::Int                        # per node, for a CPU kind; 0 for a GPU kind
+    numa::Int                         # NUMA domains per node
+    whole::Bool                       # a job gets whole nodes without asking for cores
+    header::Vector{String}            # further batch options of a job on these nodes
+    gpus::Union{GPUs,Nothing}         # nothing: a CPU kind
+    arch::String                      # a key of the site's `archs`
+    queues::Vector{Queue}             # in the order of preference; empty: the site chooses the partition
+    max_time::Union{Int,Nothing}      # seconds, where the site chooses the partition
+end
+
+isgpu(t::NodeType) = t.gpus !== nothing
 
 struct Site
     name::String
@@ -52,14 +68,7 @@ struct Site
     slurm::Bool
     account::Union{String,Nothing}
     export_env::Bool
-    partition::Bool                   # false: the site's submit filter chooses the partition
-    max_time::Union{Int,Nothing}      # seconds, for a site without partitions
-    cores::Int                        # per CPU node; 0: the site has no CPU nodes
-    numa::Int                         # NUMA domains per CPU node
-    whole_node::Bool                  # a job gets whole nodes without asking for cores
-    node_header::Vector{String}       # further batch options of a CPU job
-    queues::Vector{Queue}             # in the order of preference
-    gpu::Union{GPUs,Nothing}
+    types::Vector{NodeType}           # its kinds of node, in the order of preference; the laptop has one
     mpi::Dict{String,MPIRecipe}
     mpi_default::Union{String,Nothing} # the recipe of a run that names none
     julia_bin::String
@@ -67,7 +76,6 @@ struct Site
     depot::String                     # the site's own Julia depot: packages, artifacts, registries
     modules::Vector{String}
     archs::Dict{String,String}        # architectures: name => JULIA_CPU_TARGET; "": the node's own CPU
-    arch::String                      # the CPU nodes' architecture
     login_arch::String                # the login node's
     precompile_tasks::Union{Int,Nothing}
     precompile_time::Int              # seconds, for a precompile job on a compute node
@@ -82,25 +90,24 @@ const SITE_TABLES = ["name", "connect", "paths", "slurm", "julia", "env", "mpi",
 
 """
 The architectures of a profile: `[arch]` gives each a name and its
-`JULIA_CPU_TARGET` (`"native"`: the node's own CPU), and the CPU nodes
-(`[julia] arch`), the GPU nodes (`[slurm.gpu] arch`) and the login node
-(`[julia] login_arch`) each name one. Nodes with the same architecture share
-their compiled caches; a job sees no others. Without `[arch]` a site has one
-architecture, `default`. A login node that names none has its own, `login`,
-and compiles nothing that a job uses.
+`JULIA_CPU_TARGET` (`"native"`: the node's own CPU); each kind of node names
+one as `arch`, and the login node as `[julia] login_arch`. Nodes with the
+same architecture share their compiled caches; a job sees no others. Without
+`[arch]` a site has one architecture, `default`. A login node that names
+none has its own, `login`, and compiles nothing that a job uses; on a site
+without Slurm the login node is where jobs run.
 """
-function read_archs(conf, file; cpu_nodes::Bool, gpu_nodes::Bool)
+function read_archs(conf, file; slurm::Bool)
     julia = get(conf, "julia", Dict{String,Any}())
-    g = get(get(conf, "slurm", Dict{String,Any}()), "gpu", Dict{String,Any}())
-    for (table, name) in ((julia, "[julia]"), (g, "[slurm.gpu]")), key in ("precompile_on", "cpu_target")
-        haskey(table, key) &&
-            fail("$file, $name: `$key` is gone; name the site's architectures in [arch], and give the nodes' as `arch`")
+    for key in ("precompile_on", "cpu_target")
+        haskey(julia, key) &&
+            fail("$file, [julia]: `$key` is gone; name the site's architectures in [arch], and give each kind of node's as `arch`")
     end
+    haskey(julia, "arch") && slurm &&
+        fail("$file, [julia]: `arch` is gone; each kind of node in [[slurm.nodes]] names its architecture (SITES.md)")
     if !haskey(conf, "arch")
-        for (table, name) in ((julia, "[julia]"), (g, "[slurm.gpu]")), key in ("arch", "login_arch")
-            haskey(table, key) && fail("$file, $name: `$key` names an architecture, but the profile has no [arch] table")
-        end
-        return Dict("default" => ""), "default", "default", "default"
+        haskey(julia, "login_arch") && fail("$file, [julia]: `login_arch` names an architecture, but the profile has no [arch] table")
+        return Dict("default" => ""), "default"
     end
     archs = Dict{String,String}()
     for (name, target) in conf["arch"]
@@ -109,23 +116,77 @@ function read_archs(conf, file; cpu_nodes::Bool, gpu_nodes::Bool)
             fail("$file, [arch]: `$name` is a JULIA_CPU_TARGET such as \"znver2;znver4,clone_all\", or \"native\"")
         archs[name] = target == "native" ? "" : target
     end
-    function named(table, key, where, required)
-        if !haskey(table, key)
-            required && fail("$file, $where: `$key` must name one of the architectures in [arch]")
-            return nothing
-        end
-        haskey(archs, table[key]) ||
-            fail("$file, $where: no architecture $(repr(table[key])) in [arch]; it has ", join(sort!(collect(keys(archs))), ", "))
-        return table[key]
-    end
-    gpu = gpu_nodes ? named(g, "arch", "[slurm.gpu]", true) : nothing
-    cpu = cpu_nodes ? named(julia, "arch", "[julia]", true) : something(named(julia, "arch", "[julia]", false), gpu)
-    login = named(julia, "login_arch", "[julia]", false)
+    login = get(julia, "login_arch", nothing)
     if login === nothing
+        slurm || fail("$file: a site without Slurm compiles where it runs; give its architecture as `login_arch` in [julia]")
         login = "login"
         get!(archs, "login", "")
     end
-    return archs, cpu, something(gpu, cpu), login
+    haskey(archs, login) || fail("$file, [julia]: no architecture $(repr(login)) in [arch]; it has ", join(sort!(collect(keys(archs))), ", "))
+    return archs, login
+end
+
+const SLURM_KEYS = ["account", "export_env", "nodes"]
+const NODE_KEYS = ["name", "cores", "numa", "mem", "whole", "header", "gpus", "arch", "queues", "max_time"]
+const GPU_KEYS = ["request", "cores", "request_cores", "mem", "max"]
+
+"""
+The kinds of node of a Slurm site, `[[slurm.nodes]]`, in the order of
+preference: the first CPU kind takes a CPU job that names none, the first
+GPU kind a GPU job.
+"""
+function read_node_types(slurm, archs, file; named::Bool)
+    old = [k for k in ("node", "gpu", "queues", "partition", "max_time", "default_queue") if haskey(slurm, k)]
+    isempty(old) ||
+        fail("$file, [slurm]: ", join("`" .* old .* "`", ", "), " belong to the form of a profile before 2026-11-19. ",
+             "A site now lists its kinds of node as [[slurm.nodes]] tables, each with its shape, `arch` and queues (SITES.md)")
+    for key in keys(slurm)
+        key in SLURM_KEYS || fail("$file, [slurm]: unknown key `$key`")
+    end
+    tables = get(slurm, "nodes", nothing)
+    tables isa AbstractVector && !isempty(tables) && all(t -> t isa AbstractDict, tables) ||
+        fail("$file: [slurm] needs its kinds of node, as [[slurm.nodes]] tables")
+    types = map(tables) do t
+        name = checkname("$file: the name of a kind of node in [[slurm.nodes]]", get(t, "name", nothing))
+        where = "$file, node type $name"
+        for key in keys(t)
+            key in NODE_KEYS || fail("$where: unknown key `$key`")
+        end
+        arch = get(t, "arch", nothing)
+        if !named
+            arch === nothing || fail("$where: `arch` names an architecture, but the profile has no [arch] table")
+            arch = "default"
+        else
+            arch isa AbstractString && haskey(archs, arch) && arch != "login" ||
+                fail("$where: `arch` must name one of the architectures in [arch]: ", join(sort!(filter(!=("login"), collect(keys(archs)))), ", "))
+        end
+        g = get(t, "gpus", nothing)
+        gpus = nothing
+        if g === nothing
+            haskey(t, "cores") || fail("$where: a kind of CPU node gives its `cores`, a kind of GPU node its `gpus`")
+            cores = t["cores"]
+            cores isa Integer && cores >= 1 || fail("$where: `cores` is a positive number")
+        else
+            for key in ("cores", "numa", "whole", "mem")
+                haskey(t, key) && fail("$where: a kind of GPU node gives its `$key` per GPU, in `gpus`, or not at all")
+            end
+            g isa AbstractDict || fail("$where: `gpus` is a table such as { request = \"--gpus=%d\", cores = 8 }")
+            for key in keys(g)
+                key in GPU_KEYS || fail("$where, gpus: unknown key `$key`")
+            end
+            haskey(g, "request") && occursin("%d", g["request"]) || fail("$where: `gpus.request` needs a %d for the number of GPUs")
+            haskey(g, "cores") || fail("$where: `gpus.cores` gives the cores per GPU")
+            gpus = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing), get(g, "max", nothing))
+            cores = 0
+        end
+        queues = read_queues(get(t, "queues", []), "$where, ")
+        haskey(t, "max_time") && !isempty(queues) &&
+            fail("$where: `max_time` is for nodes without queues, where the site chooses the partition; a queue gives its own")
+        NodeType(name, cores, get(t, "numa", 1), get(t, "whole", false), collect(String, get(t, "header", String[])), gpus, arch,
+                 queues, haskey(t, "max_time") ? parse_time(t["max_time"]) : nothing)
+    end
+    allunique(t -> t.name, types) || fail("$file: two kinds of node in [[slurm.nodes]] have the same name")
+    return types
 end
 
 "The files that hold a profile of this name, the user's first."
@@ -206,33 +267,11 @@ function load_site(name::AbstractString)
     end
 
     slurm = get(conf, "slurm", nothing)
-    slurm_gpu = slurm === nothing ? nothing : get(slurm, "gpu", nothing)
-    archs, arch, gpu_arch, login_arch =
-        read_archs(conf, file; cpu_nodes = slurm === nothing || haskey(slurm, "node"), gpu_nodes = slurm_gpu !== nothing)
-    slurm === nothing && arch != login_arch &&
-        fail("$file: a site without a queue compiles where it runs; give `login_arch = $(repr(arch))` in [julia]")
-    queues = Queue[]
-    cores, numa, whole, header, gpu = Sys.CPU_THREADS, 1, false, String[], nothing
-    if slurm !== nothing
-        node = get(slurm, "node", nothing)
-        g = get(slurm, "gpu", nothing)
-        node === nothing && g === nothing && fail("$file: [slurm] needs a node table, a gpu table or both")
-        cores = 0
-        if node !== nothing
-            cores, numa, whole = node["cores"], get(node, "numa", 1), get(node, "whole", false)
-            header = collect(String, get(node, "header", String[]))
-        end
-        haskey(slurm, "default_queue") &&
-            fail("$file: `default_queue` is gone; list the queues in the order of preference")
-        queues = read_queues(get(slurm, "queues", []), archs, file)
-        if g !== nothing
-            occursin("%d", g["request"]) || fail("$file: [slurm.gpu] request needs a %d for the number of GPUs")
-            gpu = GPUs(g["request"], g["cores"], get(g, "request_cores", true), get(g, "mem", nothing),
-                       get(g, "max", nothing), read_queues(get(g, "queues", []), archs, file), gpu_arch)
-            haskey(g, "default_queue") &&
-                fail("$file: `default_queue` is gone; list the queues in the order of preference")
-        end
-    end
+    archs, login_arch = read_archs(conf, file; slurm = slurm !== nothing)
+    # the laptop: one kind of node, this machine, which compiles for itself
+    types = slurm === nothing ?
+            [NodeType("local", Sys.CPU_THREADS, 1, false, String[], nothing, login_arch, Queue[], nothing)] :
+            read_node_types(slurm, archs, file; named = haskey(conf, "arch"))
 
     julia = get(conf, "julia", Dict{String,Any}())
     env = Dict{String,String}(k => string(v) for (k, v) in get(conf, "env", Dict{String,Any}()))
@@ -244,15 +283,13 @@ function load_site(name::AbstractString)
                 slurm !== nothing,
                 slurm === nothing ? nothing : get(slurm, "account", nothing),
                 slurm === nothing ? true : get(slurm, "export_env", true),
-                slurm === nothing ? false : get(slurm, "partition", true),
-                slurm !== nothing && haskey(slurm, "max_time") ? parse_time(slurm["max_time"]) : nothing,
-                cores, numa, whole, header, queues, gpu,
+                types,
                 read_recipes(get(conf, "mpi", Dict{String,Any}()), file)...,
                 get(julia, "bin", "julia"),
                 julia_versions(get(julia, "versions", Dict{String,Any}()), file),
                 get(julia, "depot", "~/.julia"),
                 collect(String, get(julia, "modules", String[])),
-                archs, arch, login_arch,
+                archs, login_arch,
                 get(julia, "precompile_tasks", nothing),
                 parse_time(get(julia, "precompile_time", "0:30:00")),
                 get(julia, "compute_internet", true),
@@ -271,25 +308,29 @@ function julia_versions(table, file)
 end
 
 const QUEUE_KEYS = ["partition", "min_time", "max_time", "max_nodes", "max_gpus", "one_at_a_time", "preempt", "prefer",
-                    "chain", "on_request", "arch", "header", "min_gpus"]
+                    "chain", "header", "min_gpus"]
 
-function read_queues(tables, archs, file)
+function read_queues(tables, where)
+    tables isa AbstractVector && all(q -> q isa AbstractDict && haskey(q, "partition"), tables) ||
+        fail("$(where)`queues` is a list of tables, each with its `partition`")
     return map(tables) do q
         for key in keys(q)
-            key in QUEUE_KEYS || fail("$file: a queue has the unknown key `$key`")
+            key in ("arch", "on_request") &&
+                fail("$(where)queue $(q["partition"]): `$key` is gone; a queue whose nodes differ is a kind of node of its own in [[slurm.nodes]]")
+            key in QUEUE_KEYS || fail("$(where)queue $(q["partition"]): unknown key `$key`")
         end
-        arch = get(q, "arch", nothing)
-        arch === nothing || haskey(archs, arch) ||
-            fail("$file, queue $(q["partition"]): no architecture $(repr(arch)) in [arch]")
         Queue(q["partition"],
               haskey(q, "min_time") ? parse_time(q["min_time"]) : nothing,
               haskey(q, "max_time") ? parse_time(q["max_time"]) : nothing,
               get(q, "max_nodes", nothing), get(q, "max_gpus", nothing),
               get(q, "one_at_a_time", false), get(q, "preempt", false), get(q, "prefer", false),
-              get(q, "chain", true), get(q, "on_request", false), arch,
+              get(q, "chain", true),
               collect(String, get(q, "header", String[])), get(q, "min_gpus", nothing))
     end
 end
+
+"The MPI implementation of a binary, where its name says it."
+const MPI_IMPLEMENTATIONS = Dict("jll" => "mpich", "MPICH_jll" => "mpich", "OpenMPI_jll" => "openmpi")
 
 """
 The MPI recipes of a profile, `[mpi.<name>]`, and its default: `default` in
@@ -308,8 +349,16 @@ function read_recipes(tables, file)
         launcher = get(t, "launcher", "srun")
         launcher in ("srun", "mpiexec") ||
             fail("$file, [mpi.$name]: `launcher` is \"srun\" or \"mpiexec\", not $(repr(launcher))")
+        multi_node = get(t, "multi_node", launcher == "srun")
+        # an mpiexec on several nodes is told which nodes, and how many ranks on each, in its own words
+        implementation = get(t, "implementation", get(MPI_IMPLEMENTATIONS, binary, ""))
+        implementation in ("", "openmpi", "mpich") ||
+            fail("$file, [mpi.$name]: `implementation` is \"openmpi\" or \"mpich\", not $(repr(implementation))")
+        launcher == "mpiexec" && multi_node && isempty(implementation) &&
+            fail("$file, [mpi.$name]: an mpiexec that starts ranks on several nodes needs `implementation`: ",
+                 "\"openmpi\" (Open MPI, HPC-X) or \"mpich\" (MPICH, Intel MPI, MVAPICH: Hydra's mpiexec)")
         recipes[name] = MPIRecipe(name, binary, launcher, collect(String, get(t, "launcher_args", String[])),
-                                  get(t, "multi_node", launcher == "srun"),
+                                  multi_node, implementation,
                                   collect(String, get(t, "modules", String[])), get(t, "julia", nothing),
                                   Dict{String,Any}(get(t, "preferences", Dict{String,Any}())),
                                   Dict{String,String}(k => string(v) for (k, v) in get(t, "env", Dict{String,Any}())),
@@ -343,21 +392,25 @@ The queue for a job: the named one, checked against its limits, or else the
 first in the profile's order that fits. A job with checkpoints takes a
 queue marked `prefer` first.
 """
-function choose_queue(site::Site, queues; name = nothing, what, busy = Set{String}(),
-                      seconds, nodes, gpus, checkpoints, chain, on_request = false)
+function choose_queue(site::Site, type::NodeType; name = nothing, what, busy = Set{String}(),
+                      seconds, nodes, gpus, checkpoints, chain)
     kw = (; seconds, nodes, gpus, checkpoints, chain)
-    kind = gpus > 0 ? "GPU" : "CPU"
+    queues = type.queues
+    kind = length(site.types) == 1 ? "" : " for its $(type.name) nodes"
     if name !== nothing
         i = findfirst(qu -> qu.partition == name, queues)
-        i === nothing && fail("site $(site.name) has no queue $(repr(name)) for $kind jobs; its queues: ",
-                              join([qu.partition for qu in queues], ", "))
+        if i === nothing
+            other = [t for t in site.types if any(qu -> qu.partition == name, t.queues)]
+            hint = isempty(other) ? "" :
+                   isgpu(first(other)) == isgpu(type) ? ". $name is a queue of its $(first(other).name) nodes: give `node_type = $(repr(first(other).name))`" :
+                   ". $name is a queue of its $(first(other).name) nodes, which are $(isgpu(first(other)) ? "GPU" : "CPU") nodes"
+            fail("site $(site.name) has no queue $(repr(name))$kind; its queues: ", join([qu.partition for qu in queues], ", "), hint)
+        end
         why = queue_misfit(queues[i]; busy, kw...)
         why === nothing || fail("$what, but queue $name on $(site.name) $why")
         return queues[i]
     end
-    # a queue marked `on_request` is for the job that names it
-    on_request || (queues = filter(qu -> !qu.on_request, queues))
-    isempty(queues) && fail("site $(site.name) has no queues for $kind jobs in its profile")
+    isempty(queues) && fail("site $(site.name) has no queues$kind in its profile")
     order = checkpoints ? [filter(qu -> qu.prefer, queues); filter(qu -> !qu.prefer, queues)] : queues
     reasons = String[]
     for qu in order
@@ -365,24 +418,41 @@ function choose_queue(site::Site, queues; name = nothing, what, busy = Set{Strin
         why === nothing && return qu
         push!(reasons, "$(qu.partition) $why")
     end
-    fail("$what, which no queue of $(site.name) takes: ", join(reasons, "; "))
+    fail("$what, which no queue of $(site.name)$kind takes: ", join(reasons, "; "))
 end
 
-"The architecture of the site's CPU or GPU nodes: its name in the profile."
-site_arch(site::Site, gpu::Bool) = gpu && site.gpu !== nothing ? site.gpu.arch : site.arch
+"""
+The kind of node of a job: the one named, or else the site's first kind for
+CPU jobs or for GPU jobs.
+"""
+function node_type(site::Site, name; gpus::Bool, where = "the spec")
+    if name === nothing
+        i = findfirst(t -> isgpu(t) == gpus, site.types)
+        i === nothing && fail(gpus ? "$where asks for GPUs, but site $(site.name) has none in its profile" :
+                                     "site $(site.name) runs GPU jobs only; give `resources = { gpus = 1 }` in [site.$(site.name)]")
+        return site.types[i]
+    end
+    name isa AbstractString || fail("$where: `node_type` names a kind of node of the site")
+    i = findfirst(t -> t.name == name, site.types)
+    i === nothing && fail("$where: site $(site.name) has no kind of node $(repr(name)); it has ",
+                          join([t.name for t in site.types], ", "))
+    t = site.types[i]
+    isgpu(t) == gpus ||
+        fail("$where: the $name nodes of $(site.name) are ", isgpu(t) ? "GPU nodes; give `resources = { gpus = 1 }`" :
+                                                                         "CPU nodes, without GPUs")
+    return t
+end
+"A kind of node of the site, by its name."
+type_named(site::Site, name::AbstractString) = site.types[findfirst(t -> t.name == name, site.types)]
 
-"The architecture of a queue's nodes: its own, or that of the site's CPU or GPU nodes."
-queue_arch(site::Site, queue, gpu::Bool) = queue !== nothing && queue.arch !== nothing ? queue.arch : site_arch(site, gpu)
+"All queues of a site, of every kind of node."
+all_queues(site::Site) = Queue[qu for t in site.types for qu in t.queues]
 
 """
 Where code for an architecture is precompiled: \"login\" if the login node
 has it, else \"compute\", in a job on a node that has it.
 """
 precompile_where(site::Site, arch::AbstractString) = arch == site.login_arch ? "login" : "compute"
-precompile_where(site::Site, gpu::Bool) = precompile_where(site, site_arch(site, gpu))
-
-"`JULIA_CPU_TARGET` for the site's CPU or GPU nodes; empty: Julia's default, the node's own CPU."
-cpu_target(site::Site, gpu::Bool) = site.archs[site_arch(site, gpu)]
 
 known_sites() = sort!(unique!([splitext(f)[1] for d in sites_dirs() if isdir(d) for f in readdir(d) if endswith(f, ".toml")]))
 

@@ -1,6 +1,6 @@
 # A cluster that does not exist, for the tests: CPU nodes of two generations in
-# the same partitions, one odd node, GPU nodes, pre-emptible queues, and a
-# login node with another CPU.
+# the same partitions, one odd node, Intel CPU nodes of another shape, GPU nodes,
+# pre-emptible queues, and a login node with another CPU.
 name = "kepler"
 
 [connect]
@@ -12,26 +12,54 @@ hint = "open the tunnel"
 code = "/home/user/studies"
 scratch = "/scratch/user/studies"
 
-[slurm]
+# Kinds of node, in the order of preference: the first CPU kind takes a CPU job that
+# names no `node_type`, the first GPU kind a GPU job.
+
 # The AMD partitions hold Zen 2 and Zen 3 nodes (EPYC 7532, 7543), and cn112, which is
 # another machine: an EPYC 8534P (Zen 4c, AVX-512) with 384 GB and fewer NUMA domains.
-# A job in them keeps off cn112, and cn112 is used through largememq, which holds only it.
+# A job in them keeps off cn112, and cn112 is a kind of its own, through largememq.
 # (It would be simpler if the AMD partitions did not list cn112.)
-node = { cores = 64, numa = 8, mem = "256G", header = ["--exclusive"] }
+[[slurm.nodes]]
+name = "amd"
+cores = 64
+numa = 8
+mem = "256G"
+header = ["--exclusive"]
+arch = "amd"
 queues = [                             # in the order of preference: amddebugq starts much sooner
   { partition = "amddebugq", max_time = "1:00:00",  max_nodes = 1,  header = ["--exclude=cn112"] },
   { partition = "amdq",      max_time = "24:00:00", max_nodes = 16, header = ["--exclude=cn112"] },
   # stopped whenever the queues above need its node: SIGTERM, then SIGKILL after 30 s
   { partition = "amdpreq",   max_time = "24:00:00", max_nodes = 8, preempt = true, header = ["--exclude=cn112"] },
-  # cn112 alone: only for a job that names the queue. Its NUMA domains are counted when a run starts.
-  { partition = "largememq", max_time = "24:00:00", max_nodes = 1, on_request = true, arch = "zen4c" },
 ]
 
-[slurm.gpu]                            # H200, 141 GB
-request = "--gres=gpu:h200:%d"
-cores = 8                              # per GPU; more often blocks on the group's limits
-mem = "64G"                            # per GPU; always given, the default is 21 GB per core
-max = 8
+[[slurm.nodes]]                        # cn112 alone. Its NUMA domains are counted when a run starts.
+name = "largemem"
+cores = 64
+mem = "384G"
+header = ["--exclusive"]
+arch = "zen4c"
+queues = [{ partition = "largememq", max_time = "24:00:00", max_nodes = 1 }]
+
+[[slurm.nodes]]                        # Xeon Gold 6148: fewer cores, two NUMA domains
+name = "intel"
+cores = 40
+numa = 2
+mem = "192G"
+header = ["--exclusive"]
+arch = "intel"
+queues = [
+  { partition = "debugq", max_time = "1:00:00",    max_nodes = 4 },
+  { partition = "defq",   max_time = "24:00:00",   max_nodes = 32 },
+  { partition = "longq",  max_time = "7-00:00:00", max_nodes = 8 },
+  { partition = "preq",   max_time = "24:00:00",   preempt = true },
+]
+
+[[slurm.nodes]]                        # H200, 141 GB
+name = "h200"
+# per GPU 8 cores (more often blocks on the group's limits) and 64G (always given, the
+# default is 21 GB per core)
+gpus = { request = "--gres=gpu:h200:%d", cores = 8, mem = "64G", max = 8 }
 arch = "h200"
 queues = [
   { partition = "h200debugq", max_time = "1:00:00",  max_gpus = 2, chain = false },   # to get started; never chained
@@ -51,12 +79,12 @@ queues = [
 # run it slowly, as the H200 nodes did with FastPower.
 amd = "znver2"
 zen4c = "native"                       # cn112, in largememq: EPYC 8534P
+intel = "skylake-avx512"               # Xeon Gold 6148
 h200 = "native"                        # Sapphire Rapids: cn111 is a Xeon Gold 6442Y, cn113 a Platinum 8452Y
 
 [julia]
 bin = "~/.juliaup/bin/julia"
 modules = []
-arch = "amd"                           # the CPU nodes; compiled in a job, as the login node is Intel
 precompile_time = "0:30:00"
 compute_internet = true
 
@@ -84,6 +112,7 @@ modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]  # else Open MPI binds a rank, and all its threads, to one core
 multi_node = true
+implementation = "openmpi"             # how its mpiexec is told the nodes
 env = { OMP_NUM_THREADS = "1" }
 [mpi.mpiabi.preferences]
 library_names = ["/home/user/hpcx-2.20-mpi-abi/lib/libmpi_abi.so"]
@@ -98,4 +127,5 @@ modules = ["nvhpc-hpcx-cuda12/24.9"]
 launcher = "mpiexec"
 launcher_args = ["--bind-to", "none"]
 multi_node = true
+implementation = "openmpi"
 env = { OMP_NUM_THREADS = "1" }

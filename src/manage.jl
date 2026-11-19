@@ -294,19 +294,16 @@ function combine(study::AbstractString, spec::AbstractString; site::AbstractStri
 end
 
 """
-    after(study, spec; site, only_runs = [], checkout = false)
+    after(study, spec; site, only_runs = [])
 
 Run the spec's `[after]` command again, on the site's login node, over the
 newest job directory of each run. As in a job it runs in the study's output
-directory with `PROJECT`, `SCRATCH`, `STUDY`, `SPEC`, `JOBID` and
-`SIMLAUNCH_JOBDIRS` set. `PROJECT` is the study's snapshot, or with
-`checkout` a copy of the project as it is on the laptop now, for a command
-whose script was wrong when the snapshot was taken. The output is printed and
-kept in the study's `logs/`, with a line that says which of the two it was.
-Returns the log's path.
+directory with `PROJECT` (the study's snapshot), `SCRATCH`, `STUDY`, `SPEC`,
+`JOBID` and `SIMLAUNCH_JOBDIRS` set. The output is printed and kept in the
+study's `logs/`. Returns the log's path.
 """
 function after(study::AbstractString, spec::AbstractString; site::AbstractString, only_runs = String[],
-               checkout::Bool = false, io::IO = stdout)
+               io::IO = stdout)
     s = load_site(site)
     job = only(load_jobs(study, s, [spec]; only_runs))
     isempty(job.after) && fail("$spec has no [after] table")
@@ -317,25 +314,6 @@ function after(study::AbstractString, spec::AbstractString; site::AbstractString
     code, scratch = study_code(s, study), study_scratch(s, study)
     base = "$(job.name)-after-$(stamp())"
     project = joinpath(code, "src", job.project)
-    from = "the study's snapshot"
-    if checkout
-        records = [p for p in load_snapshot(study)["package"] if p["dest"] == joinpath("src", job.project)]
-        isempty(records) && fail("the snapshot of study $study does not record where $(job.project) came from")
-        home = only(records)["path"]
-        isdir(home) || fail("the project's checkout is gone: $home")
-        prov = provenance(home)
-        from = "the checkout $home" * (prov.git ? " ($(prov.branch), $(prov.sha[1:10])$(prov.dirty ? ", with uncommitted changes" : ""))" : "")
-        # a copy of its own, read-only: the study's snapshot stays what its jobs ran
-        project = joinpath(scratch, "after", base, basename(job.project))
-        mktempdir() do dir
-            excludes = ["--exclude=$e" for e in DEFAULT_EXCLUDES]
-            ignore = joinpath(home, ".simlaunchignore")
-            isfile(ignore) && push!(excludes, "--exclude-from=$ignore")
-            run(`rsync -a $excludes $(home * "/") $(dir * "/")`)
-            push_tree(s, dir, project)
-        end
-        runsite(s, "chmod -R a-w " * q(project))
-    end
     log = joinpath(scratch, "logs", base * ".out")
     runs = ["$(job.name)-$(r.label)" for r in job.runs]
     script = """
@@ -354,7 +332,6 @@ function after(study::AbstractString, spec::AbstractString; site::AbstractString
         mkdir -p logs
         {
             echo "=== the [after] command of spec $(job.name), run again on \$(hostname -s), \$(date) ==="
-            echo "=== PROJECT is $(replace(from, r"[\"\$`\\]" => "")) ==="
             STUDY=$(q(study)) SPEC=$(q(job.name)) PROJECT=$(shpath(project)) SCRATCH=\$PWD JOBID=\$ids SIMLAUNCH_JOBDIRS="\${dirs[*]}"
             export STUDY SPEC PROJECT SCRATCH JOBID SIMLAUNCH_JOBDIRS
             # as `combine`: Julia started here compiles into a depot of its own, not into the study's
@@ -386,12 +363,13 @@ gone already is marked too. Returns the runs it marked.
 function cancel(study::AbstractString, spec::AbstractString; site::AbstractString, message::AbstractString = "",
                 poll = 20, io::IO = stdout)
     s = load_site(site)
-    job = only(load_jobs(study, s, [spec]))
+    # only the spec's name: a run the site cannot take must not keep its jobs from being cancelled
+    name = checkname("the spec's name", get(load_spec(spec), "name", nothing))
     check_connection(s)
     stamped = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]"
-    scripts = "$(q(joinpath(study_code(s, study), "jobs")))/$(q(job.name))-$stamped.sh"
+    scripts = "$(q(joinpath(study_code(s, study), "jobs")))/$(q(name))-$stamped.sh"
     isempty(strip(readsite(s, "ls $scripts 2>/dev/null; true"))) &&
-        fail("no job of spec $(job.name) has been submitted on $(s.name)")
+        fail("no job of spec $(name) has been submitted on $(s.name)")
     text = isempty(strip(message)) ? "cancelled with simlaunch cancel" : replace(strip(message), r"\s+" => " ")
     # Every batch script of the spec marks its runs: a job submitted with `--run` holds only some of them, and
     # the newest script need not hold the runs of an older job that is still queued. A script from before
@@ -403,18 +381,18 @@ function cancel(study::AbstractString, spec::AbstractString; site::AbstractStrin
     marked = Set{String}(mark())
     stopped = String[]
     for round in 1:5                                  # a job told to stop may have submitted a successor
-        active = active_jobs(s, study, job.name)
+        active = active_jobs(s, study, name)
         isempty(active) && break
         for id in active
-            cancel_job(s, study, job.name, id)
-            wait_ended(s, study, job.name, id; poll, timeout = 300)
+            cancel_job(s, study, name, id)
+            wait_ended(s, study, name, id; poll, timeout = 300)
             push!(stopped, id)
         end
     end
     union!(marked, mark())                           # what a job wrote while it ended
-    runs = ["$(job.name)-$l" for l in sort!(collect(marked))]
-    println(io, isempty(stopped) ? "no job of spec $(job.name) was queued or running on $(s.name)" :
-                                   "cancelled job $(join(unique!(stopped), ", ")) of spec $(job.name) on $(s.name)")
+    runs = ["$(name)-$l" for l in sort!(collect(marked))]
+    println(io, isempty(stopped) ? "no job of spec $(name) was queued or running on $(s.name)" :
+                                   "cancelled job $(join(unique!(stopped), ", ")) of spec $(name) on $(s.name)")
     println(io, isempty(runs) ? "no run was left to mark: all had ended" : "marked as cancelled: $(join(runs, ", "))")
     return runs
 end

@@ -56,7 +56,7 @@ function check_restart(study::AbstractString, spec::AbstractString; site::Abstra
                        poll = 20, io::IO = stdout)
     s = load_site(site)
     check_connection(s)
-    busy = s.slurm && s.partition ? busy_queues(s, [s.queues; s.gpu === nothing ? Queue[] : s.gpu.queues]) : Set{String}()
+    busy = isempty(all_queues(s)) ? Set{String}() : busy_queues(s, all_queues(s))
     base = only(load_jobs(study, s, [spec]; only_runs, busy))
     base.checkpoints && !base.mutable ||
         fail("$spec: check-restart is for a spec with `checkpoints = true` and without `mutable_restarts`")

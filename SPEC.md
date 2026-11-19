@@ -83,7 +83,8 @@ In `[site.<name>]`, or at the top level as a default.
 | `julia` | the site's Julia | A Julia version or juliaup channel, such as `"1.13"`, `"1.14"` or `"beta"`: see [Julia versions](#julia-versions) |
 | `julia_args` | `[]` | Julia options, such as `["--check-bounds=yes"]`. Each set is precompiled by `prepare` |
 | `vars` | `{}` | Environment variables for the runs |
-| `queue` | chosen by rule | A partition of the site. Without it, the first in the profile's order that fits |
+| `node_type` | the site's first CPU kind, or its first GPU kind for a GPU job | The kind of node the job runs on, by its name in the site's profile (`[[slurm.nodes]]` in [`SITES.md`](SITES.md)), such as `"intel"` or `"largemem"`. Its cores, NUMA domains, queues and compiled caches are that kind's. Being a site's name, it belongs in `[site.<name>]` |
+| `queue` | chosen by rule | A partition of the job's kind of node. Without it, the first of that kind's queues that fits |
 | `node` | none | The node or nodes the job runs on, as Slurm writes a node list: `"cn099"`, `"cn[095-096]"` |
 | `sbatch_args` | `[]` | Further lines of the batch header, as written: `["--switches=1"]`, `["--exclude=cn099"]` |
 | `mpi` | the site's default, for a run with `ranks` | The MPI recipe of every run: see [MPI and placement](#mpi-and-placement) |
@@ -101,8 +102,9 @@ it is the cores of that many domains, and more threads are refused.
 A partition can mix node types. A benchmark names its node with `node`, or
 keeps off the nodes that differ with `sbatch_args = ["--exclude=cn099"]` or
 a `--constraint`. A site's profile can do the same for every job in a
-queue, and can mark a queue as taken only by name (`header` and `on_request`
-in [`SITES.md`](SITES.md)). Which CPU a run got is in its `simlaunch-job.toml`.
+queue (`header` in [`SITES.md`](SITES.md)), and lists a kind of node that
+differs as a kind of its own, which a spec chooses with `node_type`. Which
+CPU a run got is in its `simlaunch-job.toml`.
 
 ## Runs
 
@@ -121,6 +123,9 @@ in [`SITES.md`](SITES.md)). Which CPU a run got is in its `simlaunch-job.toml`.
 `submit --run <label>` submits only the named runs, and only they are
 checked against the site: a spec may hold a run that needs a recipe or a
 placement another site has, as long as that run is not named here.
+`prepare --run` prepares the same runs, and `wait`, `after`, `combine` and
+`resubmit` take `--run` too. `cancel` needs none: it reads only the spec's
+`name`.
 
 ## Environments
 
@@ -226,7 +231,10 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
 - Ranks started with `srun` end together: when one exits with an error, the
   others are stopped (`--kill-on-bad-exit=1`).
 - A job on several nodes has `resources = { nodes = N }`; a run's `nodes`
-  says how many of them its ranks use.
+  says how many of them its ranks use: the job's first `nodes` nodes, with
+  `ranks / nodes` ranks on each. `srun` is told so; an `mpiexec` gets the
+  nodes and the count in its own words (`--host` for Open MPI, `-hosts` and
+  `-ppn` for Hydra), which the recipe's `implementation` says.
 - Runs with ranks need `mode = "sequential"`.
 
 ## Restarts
@@ -285,10 +293,9 @@ cmd = "test/combine_chain.jl"
   again, on the login node, when no job of the spec is queued or running.
   `SIMLAUNCH_JOBDIRS` is then each run's newest job directory, and `JOBID`
   the job they came from (several, separated by commas, if they differ).
-  The output is printed and kept in the study's `logs/`. With `--checkout`,
-  `PROJECT` is a copy of the project as it is on the laptop now, for a
-  script that was wrong when the snapshot was taken; the log says which it
-  was. The study's snapshot is not changed.
+  The output is printed and kept in the study's `logs/`. `PROJECT` is the
+  study's snapshot. A script that was wrong when the snapshot was taken is
+  run, corrected, on the laptop over what `simlaunch fetch` brought back.
 - `[combine] cmd` is a script of the project, run by `simlaunch combine`. It
   gets a run's job directories, oldest first, as its last arguments, and
   writes into its working directory, a new `combined-<n>/` of the run.

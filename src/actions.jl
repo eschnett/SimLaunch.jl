@@ -83,7 +83,7 @@ function prepare_preamble(io::IO, site::Site, study, arch)
           done
           export JULIA_DEPOT_PATH="\$DEPOT:"       # then Julia's own depots; not ~/.julia
 
-          unset JULIA_LOAD_PATH JULIA_PROJECT
+          unset JULIA_LOAD_PATH JULIA_PROJECT JULIA_CPU_TARGET   # a combination sets its own target
           export JULIA_PKG_PRECOMPILE_AUTO=0
           """)
     site.precompile_tasks === nothing || println(io, "export JULIA_NUM_PRECOMPILE_TASKS=$(site.precompile_tasks)")
@@ -198,23 +198,21 @@ precompile_log(site::Site, study, jobid) = joinpath(study_scratch(site, study), 
 
 """
 The batch script that precompiles `group`, combinations for one
-architecture, on a compute node that has it: in a queue of the kind the jobs
-will use whose nodes are of that architecture. Its exit trap gives the
+architecture, on a compute node that has it: on the kind of node the jobs
+will use, in the first of its queues that fits. Its exit trap gives the
 depot's precompile lock back.
 """
 function precompile_script(site::Site, study, group)
     gpu, arch = first(group).gpu, first(group).arch
+    type = type_named(site, first(group).type)
     io = IOBuffer()
     println(io, "#!/bin/bash")
     queue = nothing
-    if site.partition
-        queues = [qu for qu in (gpu ? site.gpu.queues : site.queues) if queue_arch(site, qu, gpu) == arch]
-        isempty(queues) && fail("site $(site.name) has no queue for $(gpu ? "GPU" : "CPU") jobs whose nodes have the architecture $arch")
-        queue = choose_queue(site, queues; what = "the precompile job asks for $(time_string(site.precompile_time))",
-                             seconds = site.precompile_time, nodes = 1, gpus = gpu ? 1 : 0, checkpoints = false, chain = 1,
-                             on_request = true)
+    if !isempty(type.queues)
+        queue = choose_queue(site, type; what = "the precompile job asks for $(time_string(site.precompile_time))",
+                             seconds = site.precompile_time, nodes = 1, gpus = gpu ? 1 : 0, checkpoints = false, chain = 1)
     end
-    sbatch_header(io, site; queue = queue === nothing ? nothing : queue.partition, gpus = gpu ? 1 : 0,
+    sbatch_header(io, site, type; queue = queue === nothing ? nothing : queue.partition, gpus = gpu ? 1 : 0,
                   time = site.precompile_time, name = "$study-precompile", output = precompile_log(site, study, "%j"),
                   extra = queue === nothing ? String[] : queue.header)
     print(io, """
@@ -400,17 +398,20 @@ Copy the study to the site, instantiate it there, and precompile it: for
 what the given specs need, or without specs for the project itself with the
 default flags. Returns the combinations it prepared.
 """
-function prepare(study::AbstractString; site::AbstractString, specs = String[], poll = 20, io::IO = stdout)
+function prepare(study::AbstractString; site::AbstractString, specs = String[], only_runs = String[], poll = 20,
+                 io::IO = stdout)
     s = load_site(site)
     snap = load_snapshot(study)
+    isempty(only_runs) || length(specs) == 1 || fail("`--run` names runs of one spec: give exactly one `--spec`")
     needed = Combo[]
-    for job in load_jobs(study, s, specs)
+    for job in load_jobs(study, s, specs; only_runs)
         append!(needed, combos(job))
     end
     if isempty(specs)
         project = snap["project"]
-        push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", s.cores == 0, "",
-                            site_arch(s, s.cores == 0), cpu_target(s, s.cores == 0), ""))
+        t = first(s.types)                                       # the site's first kind of node
+        push!(needed, Combo(project, "default", "default", env_dir(project, "default", project), "", isgpu(t), "",
+                            t.arch, s.archs[t.arch], "", t.name))
     end
     unique!(needed)
     check_connection(s)
@@ -446,6 +447,7 @@ end
 
 function describe(io::IO, job::Job)
     println(io, "study $(job.study), spec $(job.name), site $(job.site.name)")
+    length(job.site.types) == 1 || println(io, "node type: $(job.type.name)")
     job.queue === nothing || println(io, "queue: $(job.queue.partition)")
     job.nodes > 1 && println(io, "nodes: $(job.nodes)")
     job.gpus > 0 && println(io, "GPUs: $(job.gpus), with $(job.cores) cores")
@@ -533,7 +535,7 @@ function submit(study::AbstractString, spec::AbstractString; site::AbstractStrin
     end
 
     check_connection(s)
-    busy = s.slurm && s.partition ? busy_queues(s, [s.queues; s.gpu === nothing ? Queue[] : s.gpu.queues]) : Set{String}()
+    busy = isempty(all_queues(s)) ? Set{String}() : busy_queues(s, all_queues(s))
     job = only(load_jobs(study, s, [spec]; queue, only_runs, chain, busy))
     return submit_job(job, spec; chain, io)
 end
@@ -558,7 +560,15 @@ function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, 
     end
 
     code, scratch = study_code(s, study), study_scratch(s, study)
-    base = "$(job.name)-$(stamp())"
+    # The script's name holds the second, and on the laptop so does the job's ID: a second job of the spec in
+    # the same second would take the first one's script, log and process file. It waits for the next second.
+    taken(base) = strip(readsite(s, "[ -e $(q(joinpath(code, "jobs", base * ".sh"))) ] && echo taken; true")) == "taken"
+    when = stamp()
+    while taken("$(job.name)-$when")
+        sleep(0.25)
+        when = stamp()
+    end
+    base = "$(job.name)-$when"
     remote = joinpath(code, "jobs", base * ".sh")
     mktempdir() do dir
         write(joinpath(dir, base * ".sh"), generate(job; script = remote, successor))
@@ -581,7 +591,7 @@ function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, 
         end
         runsite(s, "bash " * q(remote) * " --queued " * q(ids[1]) * " " * q(join(ids[2:end], ", ")))
     else
-        push!(ids, "L" * stamp())
+        push!(ids, "L" * when)
         runsite(s, "bash " * q(remote) * " --queued " * q(ids[1]))
         log = log_file(job, ids[1])
         # returns once the job has written its process ID, by which it is known to be running
