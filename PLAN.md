@@ -358,6 +358,13 @@ site, so every site of a study runs identical sources. A changed source makes
 a new study, so a running job never sees its package image rewritten;
 `simlaunch snapshot` refuses a study name that already exists.
 
+One part of a study does change: its `tools/`, the Julia files of SimLaunch
+that set up and check environments and start MPI ranks (`TOOLS` in
+`src/snapshot.jl`). Each `prepare` writes the current SimLaunch's copies over
+them on the site, so a study snapshotted earlier gets their fixes. They
+compute nothing a run reports, and a job that is running has read them
+already.
+
 **What goes in.** The tool reads `Project.toml` and `Manifest.toml` and
 collects every package with a `path` entry: `[sources]` paths such as XCTS's
 six siblings. A package added with `Pkg.develop` alone is named in the

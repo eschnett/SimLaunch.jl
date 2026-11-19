@@ -342,6 +342,7 @@ end
             @test_throws "[after]: unknown key `when`" job(spec_text(RUNS) * "\n[after]\ncmd = \"true\"\nwhen = 1\n", loc)
             @test_throws "[combine]: unknown key `args`" job(spec_text(RUNS) * "\n[combine]\ncmd = \"c.jl\"\nargs = []\n", loc)
             @test_throws "[site.trillium]: unknown key `thread`" job(replace(spec_text(RUNS), "threads = 32" => "thread = 32"), loc)
+            @test_throws "[site.trillium]: `mem` is not implemented yet" job(replace(spec_text(RUNS), "threads = 32" => "mem = \"8G\""), loc)
             @test_logs (:warn, r"\[site.lcoal\] names a site that has no profile") job(spec_text(RUNS) * "\n[site.lcoal]\nthreads = 1\n", loc)
             # refusals
             many = join(["[[run]]\nlabel = \"r$i\"\ncmd = \"examples/hello.jl n=$i\"\n" for i in 1:7], "\n")
@@ -1296,10 +1297,17 @@ end
             fetch("toy"; site = "cluster", runs = ["chain-c"], with_checkpoints = true, to = joinpath(root, "fetched"), io = devnull)
             @test isdir(joinpath(root, "fetched", "cluster", "chain-c", dirs[2], "ck"))
             @test !ispath(joinpath(root, "fetched", "cluster", "dev-n4"))
+            fetch("toy"; site = "cluster", runs = ["c"], to = joinpath(root, "bylabel"), io = devnull)  # a label
+            @test isdir(joinpath(root, "bylabel", "cluster", "chain-c")) && !ispath(joinpath(root, "bylabel", "cluster", "dev-n4"))
+            @test_throws "has no run" fetch("toy"; site = "cluster", runs = ["c", "nosuch"], to = joinpath(root, "x"), io = devnull)
+            @test !ispath(joinpath(root, "x", "cluster", "chain-c"))
             # old checkpoints are deleted only after a yes
             out = IOBuffer()
             @test !clean("toy"; site = "cluster", old_checkpoints = true, io = out, input = IOBuffer("n\n"))
             @test occursin("chain-c/$(dirs[1])/ck", String(take!(out))) && isdir(joinpath(run_dir, dirs[1], "ck"))
+            @test !clean("toy"; site = "cluster", old_checkpoints = true, runs = ["c"], io = out, input = IOBuffer("n\n"))
+            @test occursin("chain-c/$(dirs[1])/ck", String(take!(out)))
+            @test_throws "has no run" clean("toy"; site = "cluster", old_checkpoints = true, runs = ["nosuch"], yes = true, io = devnull)
             @test clean("toy"; site = "cluster", old_checkpoints = true, yes = true, io = devnull)
             @test !ispath(joinpath(run_dir, dirs[1], "ck")) && isdir(joinpath(run_dir, dirs[2], "ck"))
             @test !iswritable(joinpath(run_dir, dirs[1]))

@@ -103,14 +103,17 @@ end
 variant_project(project, variant) =
     variant == "default" ? joinpath("src", project) : joinpath("variants", variant, "src", project)
 
-# Fields of the design that are not implemented, and the milestone that brings each.
-const LATER_KEYS = Dict{String,Int}()
+# Fields of the design that are not implemented, and what a job gets meanwhile.
+const LATER_KEYS = Dict(
+    "mem" => "a job gets its nodes' memory, or the memory the profile gives each GPU",
+    "memory" => "a job gets its nodes' memory, or the memory the profile gives each GPU",
+)
 
 function check_keys(table, allowed, where)
     for key in keys(table)
         key in allowed && continue
         haskey(LATER_KEYS, key) &&
-            fail("$where: `$key` is not implemented yet (milestone $(LATER_KEYS[key]))")
+            fail("$where: `$key` is not implemented yet: $(LATER_KEYS[key])")
         fail("$where: unknown key `$key`")
     end
     return

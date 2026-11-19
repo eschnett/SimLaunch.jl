@@ -37,10 +37,12 @@ const USAGE = """
       simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
                       [--max-size <size>] [--to <directory>]
           Copy results to simlaunch-data/<study>/<site>/ in the study's project, or to <directory>.
+          --run names a run, <spec>-<label>, or a label, for that run of every spec.
       simlaunch usage <study> [--site <site>] [--measure]
           What the study's runs hold on disk, as each job recorded it.
       simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
           List what would be deleted on the site, and delete it after confirmation.
+          --run names a run, <spec>-<label>, or a label, for that run of every spec.
       simlaunch cancel <study> <spec.toml> --site <site> [--message <text>] [--poll <seconds>]
           Cancel the spec's jobs and mark its runs that have not ended as cancelled, for SimWatch.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
@@ -52,7 +54,7 @@ const USAGE = """
       simlaunch sites
           List the site profiles and the files they come from.
       simlaunch studies
-          List the studies in the cache.
+          List the studies in the cache, one name per line, sorted: for scripts to read.
       simlaunch version
           The version of SimLaunch, and its commit when it runs from a git checkout.
 

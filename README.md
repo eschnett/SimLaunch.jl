@@ -187,6 +187,7 @@ simlaunch usage s1                  # what each job holds on disk, as it recorde
 simlaunch after s1 jobs/s1-sweep.toml --site trillium   # the spec's [after] command again
 simlaunch cancel s1 jobs/s1-sweep.toml --site trillium --message "superseded"   # cancels its jobs, marks its runs cancelled
 simlaunch clean s1 --site trillium  # lists the study's directories there; deletes after a yes
+simlaunch studies                   # the studies on the laptop, one name per line, sorted
 ```
 
 `submit --wait` submits and then waits in the same way, on the laptop and
@@ -202,7 +203,9 @@ reached or a spec that is refused, so that a script tells "the runs did not
 all finish" (1) from "simlaunch could not tell".
 
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
-`--with-checkpoints` and `--max-size` change that. `clean` refuses while a
+`--with-checkpoints` and `--max-size` change that. `fetch --run` and
+`clean --old-checkpoints --run` take a run's name, `<spec>-<label>`, or a
+label, which names that run of every spec. `clean` refuses while a
 job of the study is queued or running, and never touches the snapshot on the
 laptop. It does not need the snapshot either.
 

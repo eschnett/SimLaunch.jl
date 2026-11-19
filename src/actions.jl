@@ -455,10 +455,11 @@ function describe(io::IO, job::Job)
     job.checkpoints && println(io, "checkpoints: ", job.mutable ? "one shared directory (mutable_restarts)" :
                                                     "a chain of jobs, one directory each")
     println(io, "runs ($(job.mode)):")
+    width = maximum(r -> length(r.label), job.runs; init = 0)
     for r in job.runs
         shape = r.ranks > 0 ? "$(lpad(r.ranks, 3)) ranks × $(lpad(r.threads, 3)) threads" : "$(lpad(r.threads, 4)) threads"
         notes = [r.envdir == joinpath("src", job.project) ? "" : r.envdir, r.placement]
-        println(io, "  $(rpad(r.label, 16)) $shape   ", join(r.cmd, " "),
+        println(io, "  $(rpad(r.label, width)) $shape   ", join(r.cmd, " "),
                 all(isempty, notes) ? "" : "   [" * join(filter(!isempty, notes), ", ") * "]")
     end
     return

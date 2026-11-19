@@ -34,6 +34,26 @@ function run_files(site::Site, study, file)
     return sections(text)
 end
 
+"""
+The runs of a study on a site that `--run` names: each name is a run's (`hello-n3`) or a label (`n3`), which
+names the run of that label in every spec. The label is the one the run's SimWatch file gives. A name
+that matches no run there is in `missing`.
+"""
+function chosen_runs(s::Site, study, names)
+    labels = Dict{String,String}()
+    for (run, text) in run_files(s, study, "simwatch.toml")
+        m = match(r"^name = \"[^ \"]+ [^/\"]+/([^\"]*)\"$"m, text)
+        labels[run] = m === nothing ? "" : m[1]
+    end
+    runs, missing = String[], String[]
+    for n in names
+        checkname("a run's name or label", n)
+        hits = haskey(labels, n) ? [n] : sort!([r for (r, l) in labels if l == n])
+        isempty(hits) ? push!(missing, n) : append!(runs, hits)
+    end
+    return unique!(runs), missing
+end
+
 kb_string(kb) = kb >= 1024^2 ? string(round(kb / 1024^2; digits = 1), " GiB") :
                 kb >= 1024 ? string(round(kb / 1024; digits = 1), " MiB") : "$kb KiB"
 
@@ -66,7 +86,7 @@ function status(studies; site = nothing, io::IO = stdout)
     width(col) = maximum(length(string(getfield(r, col))) for r in rows)
     for r in rows
         println(io, rpad(r.study, width(:study)), "  ", rpad(r.site, width(:site)), "  ", rpad(r.run, width(:run)), "  ",
-                rpad(r.status, 8), "  ", rpad(r.job, width(:job)), "  ", r.message)
+                rpad(r.status, width(:status)), "  ", rpad(r.job, width(:job)), "  ", r.message)
     end
     return rows
 end
@@ -85,9 +105,21 @@ function fetch(study::AbstractString; site = nothing, runs = String[], with_chec
     to === nothing && !isdir(project_home(snap)) &&
         fail("the project of study $study was at $(project_home(snap)), which is gone; give --to <directory>")
     occursin(r"^\d+[KMG]?$", max_size) || fail("--max-size is a number and K, M or G: $(repr(max_size))")
-    dests = String[]
-    for s in study_sites(study; site)
+    # every site is asked first, so that a name no site has stops before anything is copied
+    chosen = map(study_sites(study; site)) do s
         check_connection(s)
+        isempty(runs) && return s => String[]
+        found, missing = chosen_runs(s, study, runs)
+        return s => (found, missing)
+    end
+    if !isempty(runs)
+        nowhere = intersect((last(last(c)) for c in chosen)...)
+        isempty(nowhere) || fail("study $study has no run $(join(repr.(nowhere), " or ")) on ",
+                                 join((c[1].name for c in chosen), " or "), ": a run is named `<spec>-<label>`, or by its label")
+    end
+    dests = String[]
+    for (s, found) in chosen
+        !isempty(runs) && isempty(first(found)) && continue
         scratch = study_scratch(s, study)
         dest = joinpath(root, s.name)
         mkpath(dest)
@@ -95,7 +127,7 @@ function fetch(study::AbstractString; site = nothing, runs = String[], with_chec
         options = ["-a", "--chmod=Du+w", "--max-size=$max_size", "--exclude=*.tmp.*", "--exclude=.simlaunch-job*",
                    "--exclude=*.pid", "--exclude=*.next"]
         with_checkpoints || push!(options, "--exclude=ck/")
-        sources = isempty(runs) ? [scratch * "/"] : [joinpath(scratch, checkname("a run's name", r)) for r in runs]
+        sources = isempty(runs) ? [scratch * "/"] : [joinpath(scratch, r) for r in first(found)]
         for src in sources
             success(pipeline(`rsync $options $(rsync_target(s, src)) $(dest * "/")`; stdout = devnull, stderr)) ||
                 fail("fetching $src from $(s.name) failed (rsync's message is above)")
@@ -220,7 +252,12 @@ function clean(study::AbstractString; site::AbstractString, old_checkpoints::Boo
                            "for j in \"\$d\"/[0-9][0-9][0-9]-*; do if [ -d \"\$j/ck\" ] && [ \"\$j\" != \"\$last\" ]; then " *
                            "printf '%s\\t%s\\n' \"\$j\" \"\$(du -sk \"\$j/ck\" | cut -f1)\"; fi; done; done; true")
         found = [(String(a), parse(Int, b)) for (a, b) in (split(l, '\t') for l in split(text, '\n'; keepempty = false))]
-        isempty(runs) || filter!(f -> first(split(f[1], '/')) in runs, found)
+        if !isempty(runs)
+            chosen, missing = chosen_runs(s, study, runs)
+            isempty(missing) || fail("study $study has no run $(join(repr.(missing), " or ")) on $(s.name): ",
+                                     "a run is named `<spec>-<label>`, or by its label")
+            filter!(f -> first(split(f[1], '/')) in chosen, found)
+        end
         if isempty(found)
             println(io, "no old checkpoints of study $study on $(s.name)")
             return false
@@ -424,10 +461,11 @@ function wait_spec(study::AbstractString, spec::AbstractString; site::AbstractSt
         end
     end
     seen = Dict{String,String}()
+    # the lines come one at a time, as statuses change, so the status column is as wide as `cancelled`
     report(now) = for st in now
         get(seen, st.run, "") == st.status && continue
         seen[st.run] = st.status
-        println(io, rpad(st.run, maximum(length, runs)), "  ", rpad(st.status, 8), "  ", st.message)
+        println(io, rpad(st.run, maximum(length, runs)), "  ", rpad(st.status, 9), "  ", st.message)
     end
     while true
         active = active_jobs(s, study, job.name)
