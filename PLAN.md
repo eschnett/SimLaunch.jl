@@ -523,12 +523,18 @@ Moving a study to another site means adding that site's table, not writing a
 new script.
 
 The spec is a TOML file kept with the study's sources, for example
-`jobs/s1-sweep.toml`. Step S1's sweep, which ran on Nibi and Trillium
+`jobs/s1-sweep.toml`. Its scripts run in the study's project, or with
+`project` in another project of the study, named by its path from the
+study's project as in `[sources]`: `"coupled"` for a subproject, as
+TreeGRRMHD has, or `"../HexCGSEM"` for a sibling. A spec in the repository
+then works from every checkout, whose folder names the project's directory in
+the snapshot (`src/markdown-cleanup-b56a27/` from a worktree). Until
+2026-11-18 `project` was relative to the study's `src/`. Step S1's sweep, which ran on Nibi and Trillium
 from two hand-written scripts:
 
 ```toml
 name = "sweep1"
-project = "XCTS-harmonic"           # relative to the snapshot's src/
+# project = "coupled"               # another project of the study, relative to its own
 checkpoints = false                 # true: a chain of jobs, one directory each
 blas_threads = 1
 

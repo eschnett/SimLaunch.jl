@@ -324,6 +324,16 @@ end
             script = generate(job(spec_text(versions; top = "julia = \"9.9\""), loc))
             @test occursin("$(SimLaunch.shpath(joinpath(Sys.BINDIR, "julia"))) -t", script) && !occursin("+9.9", script)
             @test_throws "is a Julia version" job(spec_text(RUNS; top = "julia = \"1 14\""), loc)
+            # `project` is relative to the study's own project, whatever the folder of its checkout was called
+            sub = job(spec_text(RUNS; top = "project = \"coupled\"\nenv = \"test\""), loc)
+            @test sub.project == "Toy/coupled" && all(r -> r.envdir == "envs/default-test-coupled", sub.runs)
+            sib = job(spec_text(RUNS; top = "project = \"../ToyDep\"\nenv = \"cuda\""), loc)
+            @test sib.project == "ToyDep" && all(r -> r.envdir == "envs/default-cuda-ToyDep", sib.runs)
+            @test job(spec_text(RUNS), loc).project == "Toy"
+            @test_throws "leads out of the study's packages" job(spec_text(RUNS; top = "project = \"..\""), loc)
+            @test_throws "leads out of the study's packages" job(spec_text(RUNS; top = "project = \"../..\""), loc)
+            @test_throws "has no project at src/Toy/Toy" SimLaunch.load_jobs("toy", loc, [spec(spec_text(RUNS; top = "project = \"Toy\""))])
+            @test only(SimLaunch.load_jobs("toy", loc, [spec(spec_text(RUNS; top = "project = \"../ToyDep\""))])).project == "ToyDep"
             # Julia flags reach the prepare script quoted, as they reach the job
             c = only(combos(job(spec_text("[[run]]\nlabel = \"t\"\ncmd = \"examples/hello.jl n=1\"\njulia_args = [\"--trace-compile=a b\"]\n"), loc)))
             text = SimLaunch.prepare_script(loc, "toy", [c])

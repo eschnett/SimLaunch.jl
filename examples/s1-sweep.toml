@@ -1,7 +1,6 @@
 # Step S1's sweep of XCTS-harmonic: the six runs of the hand-written
 # sweep.sh (Trillium job 2864584, 18 minutes, up to 157 GB per run).
-name = "sweep1"
-project = "XCTS-harmonic"           # relative to the snapshot's src/
+name = "sweep1"                     # runs in the study's project, the snapshot of XCTS-harmonic
 blas_threads = 1
 
 [site.trillium]                     # a 192-core node: the six runs side by side

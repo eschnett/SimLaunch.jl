@@ -91,7 +91,10 @@ function env_dir(project, env, own; variant = "default", recipe = "", julia = ""
     end
     name = variant * (isempty(kinds) ? "" : "-" * join(kinds, '+')) * (isempty(recipe) ? "" : "-$recipe") *
            (isempty(julia) ? "" : "-julia$julia")
-    project == own || (name *= "-" * replace(project, r"[^A-Za-z0-9_.-]" => "-"))
+    # another project of the study: named by its path inside the study's own project, or else inside src/,
+    # and so not by the folder of the checkout the study came from
+    inside = relpath(project, own)
+    project == own || (name *= "-" * replace(startswith(inside, "..") ? project : inside, r"[^A-Za-z0-9_.-]" => "-"))
     return joinpath("envs", name)
 end
 
@@ -282,10 +285,15 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     # runs
     run_tables = get(spec, "run", nothing)
     run_tables isa AbstractVector && !isempty(run_tables) || fail("$file has no [[run]] tables")
+    # `project` is relative to the study's own project, as a path in its [sources] is: the same from every
+    # checkout, whose folder names the study's own directory. Kept relative to the study's src/.
     own = project
-    project = get(spec, "project", project)
-    project isa AbstractString && !isabspath(project) && !occursin("..", project) ||
-        fail("$file: `project` is a path relative to the study's src/")
+    rel = get(spec, "project", ".")
+    rel isa AbstractString && !isempty(rel) && !isabspath(rel) ||
+        fail("$file: `project` is a path relative to the study's project, such as \"coupled\" or \"../HexCGSEM\"")
+    project = rstrip(normpath(joinpath(own, rel)), '/')
+    (project == "." || startswith(project, "..") || isabspath(project)) &&
+        fail("$file: `project = $(repr(rel))` leads out of the study's packages")
     job_args = string_list(setting("julia_args", String[]), "$file: `julia_args`")
     job_vars = var_table(setting("vars", Dict{String,Any}()), "$file: `vars`")
     # a threads list is a scan: one run per count

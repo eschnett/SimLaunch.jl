@@ -47,8 +47,14 @@ end
 "The jobs the given spec files mean on a site."
 function load_jobs(study, site::Site, specs; kw...)
     snap = load_snapshot(study)
-    return [resolve(load_spec(file), site; study, project = snap["project"], variants = study_variants(snap), file, kw...)
-            for file in specs]
+    return map(specs) do file
+        job = resolve(load_spec(file), site; study, project = snap["project"], variants = study_variants(snap), file, kw...)
+        isdir(joinpath(cache_root(), study, "src", job.project)) ||
+            fail("$file: study $study has no project at src/$(job.project). `project` is relative to the study's own project, ",
+                 "src/$(snap["project"]) (until 2026-11-18 it was relative to src/): \"coupled\" for a subproject, ",
+                 "\"../HexCGSEM\" for a sibling, and none for the study's own")
+        job
+    end
 end
 
 """

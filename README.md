@@ -111,8 +111,7 @@ A spec says what to run, which is the same on every site, and what it needs,
 in a table per site. [`examples/s1-sweep.toml`](examples/s1-sweep.toml):
 
 ```toml
-name = "sweep1"
-project = "XCTS-harmonic"           # relative to the snapshot's src/
+name = "sweep1"                     # runs in the study's project, the snapshot of XCTS-harmonic
 
 [site.trillium]                     # a 192-core node: the runs side by side
 time = "3:00:00"

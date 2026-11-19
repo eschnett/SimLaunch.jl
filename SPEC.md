@@ -58,7 +58,7 @@ it unchanged while its jobs run; a changed spec is a new spec with a new
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `name` | required | The spec's name: part of the job's name and of every run's directory |
-| `project` | the study's project | The project whose scripts run, relative to the study's `src/` |
+| `project` | the study's project | Another project of the study whose scripts run, as a path relative to the study's project, as in its `[sources]`: `"coupled"` for a subproject, `"../HexCGSEM"` for a sibling. Until 2026-11-18 it was relative to the study's `src/`, which named the project by its checkout's folder |
 | `site` | none | A site's name: the spec is for that site only |
 | `checkpoints` | `false` | The runs continue from checkpoints: see [Restarts](#restarts) |
 | `mutable_restarts` | `false` | For a driver that appends to its old output: see [Restarts](#restarts) |
