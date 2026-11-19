@@ -324,6 +324,15 @@ end
             script = generate(job(spec_text(versions; top = "julia = \"9.9\""), loc))
             @test occursin("$(SimLaunch.shpath(joinpath(Sys.BINDIR, "julia"))) -t", script) && !occursin("+9.9", script)
             @test_throws "is a Julia version" job(spec_text(RUNS; top = "julia = \"1 14\""), loc)
+            # Julia flags reach the prepare script quoted, as they reach the job
+            c = only(combos(job(spec_text("[[run]]\nlabel = \"t\"\ncmd = \"examples/hello.jl n=1\"\njulia_args = [\"--trace-compile=a b\"]\n"), loc)))
+            text = SimLaunch.prepare_script(loc, "toy", [c])
+            @test occursin("'--trace-compile=a b' --startup-file=no", text) && !occursin("echo \"=== precompile", text)
+            # unknown keys are refused also in [after], [combine] and another site's table; an unknown site is warned of
+            @test_throws "[after]: unknown key `when`" job(spec_text(RUNS) * "\n[after]\ncmd = \"true\"\nwhen = 1\n", loc)
+            @test_throws "[combine]: unknown key `args`" job(spec_text(RUNS) * "\n[combine]\ncmd = \"c.jl\"\nargs = []\n", loc)
+            @test_throws "[site.trillium]: unknown key `thread`" job(replace(spec_text(RUNS), "threads = 32" => "thread = 32"), loc)
+            @test_logs (:warn, r"\[site.lcoal\] names a site that has no profile") job(spec_text(RUNS) * "\n[site.lcoal]\nthreads = 1\n", loc)
             # refusals
             many = join(["[[run]]\nlabel = \"r$i\"\ncmd = \"examples/hello.jl n=$i\"\n" for i in 1:7], "\n")
             @test_throws "224 threads" job(spec_text(many), trillium)             # 7 × 32 > 192
@@ -593,7 +602,15 @@ end
             # an environment of its own, written by prepare: its manifest is for that Julia
             env = joinpath(code, "envs", "default-julia9.9")
             @test isfile(joinpath(env, "Project.toml")) && isfile(joinpath(env, "Manifest.toml"))
-            @test "envs/default-julia9.9" in readlines(SimLaunch.prepared_file(loc, "toy", loc.arch))
+            marker = SimLaunch.prepared_file(loc, "toy", loc.arch)
+            @test "envs/default-julia9.9\tjulia $VERSION" in readlines(marker)
+            # compiled by another build of that Julia, as when a juliaup channel has moved on: not prepared
+            write(marker, replace(read(marker, String), "envs/default-julia9.9\tjulia $VERSION" => "envs/default-julia9.9\tjulia 9.9.0"))
+            @test_throws "not prepared" submit("toy", f; site = "local", io = devnull)
+            redirect_stdout(devnull) do
+                prepare("toy"; site = "local", specs = [f], io = devnull)
+            end
+            @test "envs/default-julia9.9\tjulia $VERSION" in readlines(marker)
             jobid = submit("toy", f; site = "local", io = devnull)
             own, other = wait_for(scratch, ["jv-own", "jv-other"])
             @test own["status"] == other["status"] == "finished"
@@ -638,6 +655,35 @@ end
             @test !iswritable(joinpath(scratch, "hello-long", "001-$jobid"))
             log = read(joinpath(scratch, "logs", "hello-$jobid.out"), String)
             @test occursin("=== output of bad", log) && occursin("ended with exit code", log)
+            # with checkpoints, a run that the stopped job never started is stopped, not failed: a later job runs it
+            fc = spec("""
+                      name = "ckseq"
+                      checkpoints = true
+                      [restart]
+                      to = "checkpoint"
+                      from = "restart_from"
+                      [site.local]
+                      threads = 1
+                      [[run]]
+                      label = "first"
+                      cmd = "examples/count.jl steps=40 delay=0.1"
+                      [[run]]
+                      label = "second"
+                      cmd = "examples/count.jl steps=2 delay=0.1"
+                      """)
+            jobid = submit("toy", fc; site = "local", io = devnull)
+            while !isfile(joinpath(scratch, "ckseq-first", "001-$jobid", "count.csv")); sleep(0.1); end
+            run(`kill -TERM $(readchomp(joinpath(scratch, "logs", "ckseq-$jobid.pid")))`)
+            states() = [try TOML.parsefile(joinpath(scratch, n, "simwatch.toml")) catch; Dict("status" => "") end
+                        for n in ("ckseq-first", "ckseq-second")]
+            t0 = time()
+            while any(t -> t["status"] in ("", "queued", "starting", "running"), states()) && time() - t0 < 60; sleep(0.3); end
+            first, second = states()
+            @test first["status"] == "stopped" && occursin("stopped by a signal", first["message"])
+            @test second["status"] == "stopped" && second["message"] == "job $jobid stopped before this run started; a later job runs it"
+            sleep(1.1)
+            submit("toy", fc; site = "local", io = devnull)
+            @test all(t -> t["status"] == "finished", wait_for(scratch, ["ckseq-first", "ckseq-second"]))
         end
 
         @testset "cancel" begin
@@ -686,6 +732,18 @@ end
             @test occursin("no job of spec can was queued or running", String(take!(out)))
             @test TOML.parsefile(joinpath(scratch, "can-long", "simwatch.toml"))["message"] == "cancelled with simlaunch cancel"
             @test SimLaunch.command(["cancel", "toy", f, "--site", "local", "--message", "x"]) == 0
+            # a run of an older job is marked too, not only those of the newest batch script
+            sleep(1.1)
+            older = submit("toy", f; site = "local", only_runs = ["long"], io = devnull)
+            while !isfile(joinpath(scratch, "can-long", "002-$older", "result.csv")); sleep(0.2); end
+            sleep(1.1)
+            newer = submit("toy", f; site = "local", only_runs = ["done"], io = devnull)
+            job_state() = try read(joinpath(scratch, "can-done", ".simlaunch-job"), String) catch; "" end
+            while !startswith(job_state(), "$newer done"); sleep(0.2); end      # the newer job has ended
+            # (can-next, cancelled already, takes the new message too; the newest script alone would mark nothing)
+            @test cancel("toy", f; site = "local", message = "both jobs", poll = 0.3, io = devnull) == ["can-long", "can-next"]
+            long = TOML.parsefile(joinpath(scratch, "can-long", "simwatch.toml"))
+            @test long["status"] == "cancelled" && long["message"] == "both jobs"
         end
 
         @testset "wait" begin
@@ -703,11 +761,18 @@ end
             text = String(take!(out))
             @test occursin("exit code 7", text) && occursin("answer = 3", text)      # with the end of its output
             # from the command line: the exit code says whether the runs finished
-            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--poll", "0.3"]) == 1
+            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--poll", "0.3"]) == SimLaunch.NOT_FINISHED == 1
             # a look that does not wait, once the jobs have ended
             @test wait_spec("toy", good; site = "local", once = true, io = devnull) === true
             @test SimLaunch.command(["wait", "toy", good, "--site", "local", "--once"]) == 0
-            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--once"]) == 1
+            @test SimLaunch.command(["wait", "toy", bad, "--site", "local", "--once"]) == SimLaunch.NOT_FINISHED
+            # an error is not a run that did not finish: a site that cannot be reached
+            write(joinpath(sites, "away.toml"), "base = \"local\"\n[connect]\nhost = \"away.invalid\"\ncheck = \"false\"\n" *
+                                                "[paths]\ncode = \"/away/code\"\nscratch = \"/away/scratch\"\n")
+            @test redirect_stderr(devnull) do
+                SimLaunch.main(["wait", "toy", good, "--site", "away", "--once"])
+            end == SimLaunch.ERROR == 2
+            rm(joinpath(sites, "away.toml"))
         end
 
         @testset "a spec in Julia, a job's record, and the [after] command again" begin
@@ -784,7 +849,7 @@ end
             @test !ispath(mine)                                                  # given back by the job
             @test read(joinpath(other, "jobid"), String) == "999\n"             # and the other study's was left alone
             rm(joinpath(study_code(cluster, "other")); recursive = true)
-            @test readlines(joinpath(ccode, "depot-gpu", "prepared")) == ["envs/default-dates\t\tgpu"]
+            @test readlines(joinpath(ccode, "depot-gpu", "prepared")) == ["envs/default-dates\t\tgpu\tjulia $VERSION"]
             # the caches are the study's own; the packages are the site's
             @test "Toy" in readdir(joinpath(ccode, "depot-gpu", "compiled", "v$(VERSION.major).$(VERSION.minor)"))
             @test islink(joinpath(ccode, "depot-gpu", "packages"))
@@ -1190,6 +1255,7 @@ end
         @testset "clean" begin
             cluster = load_site("cluster")
             out = IOBuffer()
+            @test_throws "without it, `clean` deletes the whole study" clean("toy"; site = "cluster", runs = ["x"], io = devnull)
             @test !clean("toy"; site = "cluster", io = out, input = IOBuffer("\n"))
             @test occursin("delete both directories?", String(take!(out))) && isdir(study_code(cluster, "toy"))
             @test clean("toy"; site = "cluster", yes = true, io = devnull)

@@ -20,9 +20,10 @@ the batch script from a short job spec and a site profile, and submits it with
 
 ## Status
 
-In development. Jobs on one node or one GPU have run on four clusters.
-Restart chains, MPI and the commands that follow a job (`status`, `fetch`,
-`wait`) have run on one cluster, with a toy project.
+In development. Jobs on one node or one GPU have run on four clusters, MPI
+on all four, and TreeAMR's benchmarks on Symmetry. Restart chains and the
+commands that follow a job (`status`, `fetch`, `wait`) have run on one
+cluster, with a toy project.
 ["What has run where"](PLAN.md#what-has-run-where) in the plan has the details.
 
 ## Installation
@@ -196,6 +197,10 @@ is interrupted, or the connection drops, the jobs go on, and `wait` can be
 started again. `wait --once` looks once, for a script that checks now and
 then: it exits with 0 when every run has finished, 1 when the jobs have
 ended without that, and 3 while a job of the spec is queued or running.
+
+Every command exits with 2 for an error, such as a site that cannot be
+reached or a spec that is refused, so that a script tells "the runs did not
+all finish" (1) from "simlaunch could not tell".
 
 `fetch` leaves checkpoints (`ck/`) and files above 100 MB on the site;
 `--with-checkpoints` and `--max-size` change that. `clean` refuses while a

@@ -14,6 +14,32 @@ function combo_line(c::Combo)
     return join(fields, '\t')
 end
 
+"""
+A combination's line in the `prepared` file: `combo_line` and the Julia
+build it was compiled with, such as `julia 1.14.0-beta1`. A juliaup channel
+moves on to new builds, and a cache of an older one is no use to the new.
+"""
+prepared_line(c::Combo, build) = combo_line(c) * "\tjulia " * build
+
+"Bash text that is the version of the combination's Julia on the site, as `julia --version` says it."
+julia_build_text(site::Site, c::Combo; bin = "\"\$JULIA\"") =
+    "\$($(julia_text(site, c.mpi, c.julia; bin)) --version 2>/dev/null | sed 's/^julia version //')"
+
+"Bash text that is the combination's line in the `prepared` file, written on the site."
+prepared_line_text(site::Site, c::Combo) = "\"\$(printf '%s\\tjulia %s' $(q(combo_line(c))) \"$(julia_build_text(site, c))\")\""
+
+"The lines the `prepared` file needs for the combinations: their Julia builds are asked of the site, each binary once."
+function prepared_lines(site::Site, cs)
+    isempty(cs) && return String[]
+    texts = [julia_text(site, c.mpi, c.julia; bin = shpath(site.julia_bin)) for c in cs]
+    commands = unique(texts)
+    loads = join(["module load $(q(m)); " for m in site.modules])
+    out = readsite(site, loads * join(["echo \"$(julia_build_text(site, c; bin = shpath(site.julia_bin)))\""
+                                       for c in cs[[findfirst(==(t), texts) for t in commands]]], "; ") * "; true")
+    builds = Dict(zip(commands, split(out, '\n')))
+    return [prepared_line(c, strip(get(builds, t, ""))) for (c, t) in zip(cs, texts)]
+end
+
 function combo_text(c::Combo)
     return string(c.envdir, isempty(c.args) ? "" : " with $(c.args)", c.gpu ? " on a GPU node" : "")
 end
@@ -66,7 +92,7 @@ function precompile_block(io::IO, site::Site, c::Combo; instantiate::Bool)
     flags = isempty(c.args) ? "" : c.args * " "
     julia = "$(julia_text(site, c.mpi, c.julia)) $(flags)--startup-file=no --project=\"\$CODE\"/$(q(c.envdir))"
     println(io)
-    println(io, "echo \"=== precompile $(combo_text(c)) ===\"")
+    println(io, "echo ", q("=== precompile $(combo_text(c)) ==="))
     println(io, "(")                                   # a recipe's modules and variables stay in here
     recipe_setup(io, site, c.mpi)
     isempty(c.target) || println(io, "export JULIA_CPU_TARGET=$(q(c.target))")
@@ -77,7 +103,8 @@ function precompile_block(io::IO, site::Site, c::Combo; instantiate::Bool)
     end
     println(io, "$julia \"\$CODE\"/tools/check_precompiled.jl")
     println(io, ")")
-    println(io, "grep -qxF $(q(combo_line(c))) \"\$DEPOT/prepared\" 2>/dev/null || echo $(q(combo_line(c))) >> \"\$DEPOT/prepared\"")
+    println(io, "line=$(prepared_line_text(site, c))")
+    println(io, "grep -qxF \"\$line\" \"\$DEPOT/prepared\" 2>/dev/null || printf '%s\\n' \"\$line\" >> \"\$DEPOT/prepared\"")
     return
 end
 
@@ -116,7 +143,7 @@ function prepare_script(site::Site, study, needed)
         kinds = env_kinds(c.env)
         println(io)
         if c.envdir == variant_project(c.project, c.variant)
-            println(io, "echo \"=== instantiate $(c.envdir) ===\"")
+            println(io, "echo ", q("=== instantiate $(c.envdir) ==="))
             println(io, "$julia --startup-file=no --project=\"\$CODE\"/$(q(c.envdir)) -e 'using Pkg; Pkg.instantiate()'")
             continue
         end
@@ -126,15 +153,15 @@ function prepare_script(site::Site, study, needed)
         users = [u for u in needed if u.envdir == c.envdir]
         done = all(u -> precompile_where(site, u.arch) == "compute", users)
         if done
-            tests = join(["grep -qxF $(q(combo_line(u))) $(shpath(prepared_file(site, study, u.arch))) 2>/dev/null"
+            tests = join(["grep -qxF $(prepared_line_text(site, u)) $(shpath(prepared_file(site, study, u.arch))) 2>/dev/null"
                           for u in users], " && ")
             println(io, "if $tests; then")
-            println(io, "echo \"=== environment $(c.envdir): compiled on a compute node already, left as it is ===\"")
+            println(io, "echo ", q("=== environment $(c.envdir): compiled on a compute node already, left as it is ==="))
             println(io, "else")
         end
         "test" in kinds && pushfirst!(packages, "--test")
         what = [isempty(kinds) ? String[] : [join(kinds, ", ")]; isempty(c.julia) ? String[] : ["Julia $(c.julia)"]]
-        println(io, "echo \"=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(what, ", ")) ===\"")
+        println(io, "echo ", q("=== environment $(c.envdir): $(c.project)$(c.variant == "default" ? "" : " ($(c.variant))") and $(join(what, ", ")) ==="))
         println(io, "(")
         recipe_setup(io, site, c.mpi)
         println(io, "$julia --startup-file=no \"\$CODE\"/tools/make_env.jl \"\$CODE\"/$(q(variant_project(c.project, c.variant))) ",
@@ -264,7 +291,9 @@ function precompile_on_compute(site::Site, study, needed; poll = 20, io::IO = st
     code = study_code(site, study)
     for (arch, gpu) in unique!([(c.arch, c.gpu) for c in needed])
         precompile_where(site, arch) == "compute" || continue
-        missing_combos() = (have = prepared(site, study, arch); [c for c in needed if c.arch == arch && c.gpu == gpu && combo_line(c) ∉ have])
+        mine = [c for c in needed if c.arch == arch && c.gpu == gpu]
+        lines = prepared_lines(site, mine)
+        missing_combos() = (have = prepared(site, study, arch); [c for (c, l) in zip(mine, lines) if l ∉ have])
         isempty(missing_combos()) && continue
         acquire_lock(site, study, arch; poll, io)
         group = missing_combos()                   # the job that held the lock may have made them
@@ -507,8 +536,9 @@ end
 function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, io::IO = stdout)
     s, study = job.site, job.study
     have = prepared(s, study, job_arch(job))
-    for combo in combos(job)
-        combo_line(combo) in have && continue
+    cs = combos(job)
+    for (combo, line) in zip(cs, prepared_lines(s, cs))
+        line in have && continue
         fail("study $study is not prepared on $(s.name) for $(combo_text(combo))",
              "; run `simlaunch prepare $study --site $(s.name) --spec $spec`")
     end

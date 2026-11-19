@@ -2,10 +2,10 @@
 
 2026-11-16 · Erik Schnetter
 
-The design of SimLaunch, its reasons and its milestones. Milestones 1 and 2
-are implemented; [Plan and open questions](#plan-and-open-questions) says
-what has run where. Sections on status, fetch, restarts, variants, MPI and
-placement describe what milestones 3 and 4 will build.
+The design of SimLaunch, its reasons and its milestones. Milestones 1 to 3
+are implemented, and milestone 4, the migration of the existing scripts, is
+under way; [Plan and open questions](#plan-and-open-questions) says what has
+run where.
 
 **Contents**
 
@@ -411,7 +411,8 @@ differences ([Prepare](#prepare)).
 
 **Cost.** A snapshot is a few tens of MB (XCTS's seven trees: 36 MB) and a few
 seconds of rsync. A study that is reused for many runs pays it once. Old
-snapshots are removed with `simlaunch clean`, never automatically.
+snapshots are never removed automatically, and no command removes them yet:
+`simlaunch clean` deletes a study on a site, not on the laptop.
 
 ## Prepare
 
@@ -459,7 +460,11 @@ flags.
    compiled is not written again by a later `prepare`: the login node would
    compile MPIPreferences anew, and the compute node's caches of MPI would
    be stale (Symmetry, job 600484, which stopped at its check with "not
-   precompiled").
+   precompiled"). The `prepared` file of a depot names each combination
+   with the Julia build that compiled it (`julia 1.14.0-beta1`), which
+   `prepare` and `submit` ask of the site's binary: when a juliaup channel
+   moves on to a new build, the combination is not prepared any more, and
+   `prepare` compiles it again.
 
 **The study's depot.** Every study has Julia depots of its own on each site,
 one per architecture of the site's profile,
@@ -647,8 +652,10 @@ is one task; such a job uses a recipe with the binary's own `mpiexec`.
 
 **The default recipe.** A profile's `[mpi]` table names a default, and a run
 with `ranks` that names no recipe gets it, so a spec without `mpi` runs on
-every site. The default is the standard MPI ABI everywhere (MPI.jl's
-`abi = "MPIABI"`): on a cluster the site's own MPI through mpi_abi_wrapper,
+every site. The default is meant to be the standard MPI ABI everywhere
+(MPI.jl's `abi = "MPIABI"`), and is in a user's profile once its wrapper
+is built; until then a cluster's profile in `sites/` defaults to `jll`
+(Trillium's GPU profile has no `jll`). On a cluster the site's own MPI through mpi_abi_wrapper,
 which has the site's interconnect and, where the site's MPI has it, CUDA; on
 the laptop MPIABI_jll, since there is no site MPI to wrap. One ABI means one
 way MPI.jl is built on every site, and the wrapper costs nothing measurable
@@ -855,7 +862,9 @@ cancelled while it waits writes nothing, its runs stay `queued`, and
 SimWatch shows them as lost. The command marks the runs through the batch
 script (`<script> --cancelled <message>`), cancels the jobs, including a
 successor that a stopped job submitted, and marks again what a job wrote
-while it ended. A finished or failed run stays as it is.
+while it ended. A finished or failed run stays as it is. Every batch script
+of the spec marks its runs, not only the newest: jobs submitted with
+`--run` hold different runs, and an older one may still be queued.
 
 A job that is told to stop without the command says what it can tell.
 Without checkpoints: `failed`, "killed at the time limit", within a minute
@@ -880,7 +889,9 @@ holds no session open: interrupted, it is started again. This is also how a
 spec runs in a project's CI, as `--site local`. `wait --once` looks once and
 does not wait, for a script that checks a suite now and then, such as
 TreeGRRMHD's commit status: it exits with 3 while a job is queued or
-running, so that the script need not parse `status`'s table.
+running, so that the script need not parse `status`'s table. An error exits
+with 2 in every command, never with the 1 of runs that did not finish, so
+that a site that cannot be reached is not posted as a failed suite.
 
 **Fetch** copies a run's results back to
 `simlaunch-data/<study>/<site>/<run>/` in the project the study came from
@@ -1297,7 +1308,7 @@ and for clusters that are down.
    | `check-restart`, passing and failing | real local jobs, a toy driver that follows the contract |
    | `status`, `fetch`, `usage`, `clean`, `combine` | the same runs |
    | Variants, test dependencies, MPI ranks under MPICH_jll's `mpiexec` | a run on the laptop, 2 and 3 ranks, by hand |
-   | `srun` launchers, `numactl` placement, several nodes, the site's MPI | the generated scripts only (`test/reference/symmetry-nested.sh`) |
+   | `srun` launchers, `numactl` placement, several nodes, the site's MPI | the generated scripts only (`test/reference/kepler-nested.sh`) |
 
    Run on Symmetry's AMD nodes on 2026-11-16, with a toy project (a
    counting driver that follows the restart contract, and an MPI hello that
@@ -1375,9 +1386,9 @@ and for clusters that are down.
 
    Open of the done-when list: `check-restart` for the converted drivers,
    a checkpointed GPU row on `h200preq`, and a chain on Trillium with its
-   results read by the study scripts. A real pre-emption has not happened yet, only its signal. Not implemented: a run's `julia` channel, the
+   results read by the study scripts. A real pre-emption has not happened yet, only its signal. Not implemented: the
    memory part of the resource check, `--snapshot-pins`, `combine` on the
-   laptop, and the removal of a snapshot from the laptop by `clean`.
+   laptop, and the removal of a snapshot from the laptop.
 4. **Migration.** The tables above, one script at a time, each when a run of
    it is due. Done when `symmetry-run.sh` and XCTS's three scripts are retired
    and the skills point at the profiles.
@@ -1424,8 +1435,8 @@ and for clusters that are down.
        its finished runs point at them;
      - a smoke run of every run of a spec on `local` before `submit`, which
        needs a convention for a tiny size;
-     - the same recipe names on every site (`jll`, `mpiabi`), with the
-       launcher for a GPU job chosen by the tool;
+     - the launcher for a GPU job chosen by the tool (the recipe names,
+       `jll` and `mpiabi`, are the same on every site since 2026-11-18);
      - MPI recipes for the GPU jobs of Nibi and Fir, whose `mpiabi` recipe
        starts its ranks with `srun`.
 

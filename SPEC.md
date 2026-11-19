@@ -45,7 +45,13 @@ the run has a directory of its own in it, `001-<job ID>/`, with the run's
 it started, its host and the host's CPU model, the job's node list and
 partition, and its GPUs.
 
-An unknown key is an error, never ignored.
+An unknown key is an error, never ignored, also in another site's table. A
+table `[site.<name>]` for a site that has no profile here is warned about.
+
+Every command that takes a spec reads the file again: `prepare`, `submit`,
+`resubmit`, `wait`, `cancel`, `after`, `combine` and `check-restart`. Keep
+it unchanged while its jobs run; a changed spec is a new spec with a new
+`name`.
 
 ## Top level
 
@@ -187,10 +193,12 @@ placement = "numa"                  # rank i of the 8 on its node: NUMA domain i
   recipes.
 - A run with `ranks` that names no recipe gets the site's default (`default`
   in its `[mpi]` table), and so does `mpi = "default"`. A spec that leaves
-  `mpi` out runs on every site. The default is the standard MPI ABI on
-  every site: on a cluster the site's own MPI through mpi_abi_wrapper, on
-  the laptop MPIABI_jll. Name a recipe only to compare MPI libraries or to
-  work around one.
+  `mpi` out runs on every site. The default is meant to be the standard MPI
+  ABI, `mpiabi`: on a cluster the site's own MPI through mpi_abi_wrapper,
+  on the laptop MPIABI_jll. On a cluster you build the wrapper once, and
+  until your profile says `default = "mpiabi"` the default there is `jll`,
+  MPICH_jll ([`SITES.md`](SITES.md)). Name a recipe only to compare MPI
+  libraries or to work around one.
 - `ranks` starts the run through the recipe's launcher. A run with `mpi` but
   without `ranks` runs in the recipe's environment without a launcher.
 - `placement = "numa"` binds each rank to its share of the node's NUMA
@@ -312,8 +320,8 @@ runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi =
 - The file is one file, evaluated in a module of its own with Julia's
   standard library. It cannot load the study's packages or `include`
   another file.
-- It must give the same spec every time: `wait`, `after` and `resubmit`
-  evaluate it again. No random numbers, dates or files that change.
+- It must give the same spec every time, since every command that takes the
+  spec evaluates it again. No random numbers, dates or files that change.
 - `submit` keeps what the file evaluated to beside the batch script on the
   site, as `jobs/<name>-<time>.toml`, and the file itself as `.jl`.
   `submit --dry-run` shows the runs without submitting.

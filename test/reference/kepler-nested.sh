@@ -384,7 +384,7 @@ on_term() {
 # themselves, make every job directory read-only, and echo the runs' output
 # into the job's log.
 finish() {
-    local rc=$? i dir id state
+    local rc=$? i dir id state next
     for i in "${!LABELS[@]}"; do
         if [ "${SKIP[$i]:-0}" = 1 ]; then continue; fi
         dir=$(run_dir "$i")
@@ -400,6 +400,11 @@ finish() {
             elif [ -n "$TERMINATED" ] && [ "$CHECKPOINTS" = 0 ] && ! at_limit; then
                 sw_write "$i" cancelled "job $JOBID was cancelled before this run finished"
                 echo "$JOBID cancelled $rc" > "$dir/.simlaunch-job"
+            elif [ -n "$TERMINATED" ] && [ "$CHECKPOINTS" = 1 ] && [ "$id" != "$JOBID" ]; then
+                # told to stop before this run started: a later job of the chain runs it
+                next=$(cat "$SCRATCH/logs/$SPEC-$JOBID.next" 2>/dev/null)
+                sw_write "$i" stopped "job $JOBID stopped before this run started; ${next:+job $next runs it}${next:-a later job runs it}" "$next"
+                echo "$JOBID stopped $rc" > "$dir/.simlaunch-job"
             else
                 sw_write "$i" failed "job $JOBID ended before this run finished (exit code $rc)"
                 echo "$JOBID done $rc" > "$dir/.simlaunch-job"

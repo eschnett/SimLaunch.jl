@@ -1,6 +1,12 @@
 # The command line.
 
-"The exit code of `simlaunch wait --once` while a job of the spec is queued or running."
+# Exit codes. A script that posts a status tells "the runs did not all finish"
+# from "simlaunch could not tell", such as a site that cannot be reached.
+"The jobs have ended, and not every run has finished: `wait`, `submit --wait`, `check-restart`."
+const NOT_FINISHED = 1
+"An error: the command could not do or find out what it was asked."
+const ERROR = 2
+"`wait --once`: a job of the spec is queued or running."
 const ACTIVE = 3
 
 const USAGE = """
@@ -14,17 +20,17 @@ const USAGE = """
       simlaunch prepare <study> --site <site> [--spec <spec.toml>]...
           Copy the study to the site, instantiate and precompile it there.
       simlaunch submit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]...
-                       [--chain <n>] [--wait] [--dry-run]
+                       [--chain <n>] [--wait [--poll <seconds>]] [--dry-run]
           Generate the batch script and submit it. --dry-run only prints it.
           --wait then waits as `simlaunch wait` does.
           --run submits only the named runs, for a site that cannot hold them all.
           --chain queues <n> jobs of a spec with checkpoints, one after another.
       simlaunch resubmit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]
+                         [--wait [--poll <seconds>]]
           Submit the next job of a run with checkpoints.
       simlaunch wait <study> <spec.toml> --site <site> [--run <label>]... [--poll <seconds> | --once]
           Wait until no job of the spec is queued or running; fails unless every run has finished.
-          --once looks once and does not wait: exit code 0 when every run has finished,
-          1 when the jobs have ended without that, $ACTIVE while a job is queued or running.
+          --once looks once and does not wait; its exit code is $ACTIVE while a job is queued or running.
       simlaunch status <study>... [--site <site>]
           One table of the studies' runs on the sites they are prepared on.
       simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
@@ -34,7 +40,7 @@ const USAGE = """
           What the study's runs hold on disk, as each job recorded it.
       simlaunch clean <study> --site <site> [--old-checkpoints [--run <run>]...] [--yes]
           List what would be deleted on the site, and delete it after confirmation.
-      simlaunch cancel <study> <spec.toml> --site <site> [--message <text>]
+      simlaunch cancel <study> <spec.toml> --site <site> [--message <text>] [--poll <seconds>]
           Cancel the spec's jobs and mark its runs that have not ended as cancelled, for SimWatch.
       simlaunch combine <study> <spec.toml> --site <site> [--run <label>]...
           Run the spec's [combine] script over each run's job directories.
@@ -49,6 +55,10 @@ const USAGE = """
           List the studies in the cache.
       simlaunch version
           The version of SimLaunch, and its commit when it runs from a git checkout.
+
+    Exit codes: 0 when the command did what it was asked; $NOT_FINISHED when the jobs have ended
+    and not every run has finished (wait, submit --wait, check-restart); $ERROR for an error,
+    such as a site that cannot be reached.
 
     A spec is a TOML file, or a Julia file (.jl) whose last expression is the spec.
     Snapshots are kept in ~/.cache/simlaunch (or \$SIMLAUNCH_CACHE).
@@ -147,7 +157,8 @@ function command(args)
     elseif cmd in ("submit", "resubmit")
         pos, opt = parse_args(rest, ["site", "queue", "run", "chain", "poll"], cmd == "submit" ? ["dry-run", "wait"] : ["wait"]; multi = ["run"])
         length(pos) == 2 ||
-            fail("usage: simlaunch $cmd <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]")
+            fail("usage: simlaunch $cmd <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>] ",
+                 "[--wait [--poll <seconds>]]", cmd == "submit" ? " [--dry-run]" : "")
         chain = tryparse(Int, get(opt, "chain", "1"))
         chain === nothing && fail("--chain takes a number of jobs")
         kw = (; site = need(opt, "site"), queue = get(opt, "queue", nothing), only_runs = get(opt, "run", String[]), chain)
@@ -155,7 +166,7 @@ function command(args)
         dry && haskey(opt, "wait") && fail("--wait and --dry-run exclude each other")
         cmd == "submit" ? submit(pos[1], pos[2]; kw..., dry_run = dry) : resubmit(pos[1], pos[2]; kw...)
         if haskey(opt, "wait")
-            wait_spec(pos[1], pos[2]; site = kw.site, only_runs = kw.only_runs, poll = poll_seconds(opt)) || return 1
+            wait_spec(pos[1], pos[2]; site = kw.site, only_runs = kw.only_runs, poll = poll_seconds(opt)) || return NOT_FINISHED
         end
     elseif cmd == "wait"
         pos, opt = parse_args(rest, ["site", "run", "poll"], ["once"]; multi = ["run"])
@@ -165,14 +176,14 @@ function command(args)
         ended = wait_spec(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[]),
                           poll = once ? 0 : poll_seconds(opt), once)
         ended === nothing && return ACTIVE
-        ended || return 1
+        ended || return NOT_FINISHED
     elseif cmd == "status"
         pos, opt = parse_args(rest, ["site"])
         isempty(pos) && fail("usage: simlaunch status <study>... [--site <site>]")
         status(pos; site = get(opt, "site", nothing))
     elseif cmd == "fetch"
         pos, opt = parse_args(rest, ["site", "run", "max-size", "to"], ["with-checkpoints"]; multi = ["run"])
-        length(pos) == 1 || fail("usage: simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]")
+        length(pos) == 1 || fail("usage: simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints] [--max-size <size>] [--to <directory>]")
         fetch(pos[1]; site = get(opt, "site", nothing), runs = get(opt, "run", String[]),
               with_checkpoints = get(opt, "with-checkpoints", false), max_size = get(opt, "max-size", "100M"),
               to = get(opt, "to", nothing))
@@ -187,7 +198,7 @@ function command(args)
               runs = get(opt, "run", String[]), yes = get(opt, "yes", false))
     elseif cmd == "cancel"
         pos, opt = parse_args(rest, ["site", "message", "poll"])
-        length(pos) == 2 || fail("usage: simlaunch cancel <study> <spec.toml> --site <site> [--message <text>]")
+        length(pos) == 2 || fail("usage: simlaunch cancel <study> <spec.toml> --site <site> [--message <text>] [--poll <seconds>]")
         cancel(pos[1], pos[2]; site = need(opt, "site"), message = get(opt, "message", ""), poll = poll_seconds(opt))
     elseif cmd == "combine"
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
@@ -201,7 +212,7 @@ function command(args)
     elseif cmd == "check-restart"
         pos, opt = parse_args(rest, ["site", "run"]; multi = ["run"])
         length(pos) == 2 || fail("usage: simlaunch check-restart <study> <spec.toml> --site <site> [--run <label>]...")
-        check_restart(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[])) || return 1
+        check_restart(pos[1], pos[2]; site = need(opt, "site"), only_runs = get(opt, "run", String[])) || return NOT_FINISHED
     elseif cmd == "sites"
         for name in known_sites()
             found = read_profile(name)
@@ -225,8 +236,15 @@ function (@main)(args)
     catch err
         # the reader of the output has gone, as in `simlaunch sites | head -1`
         err isa Base.IOError && err.code == Base.UV_EPIPE && return 0
-        err isa UserError || rethrow()
-        println(stderr, "simlaunch: ", err.msg)
-        return 1
+        err isa InterruptException && rethrow()
+        if err isa UserError
+            println(stderr, "simlaunch: ", err.msg)
+        else
+            # a defect of simlaunch, or something it did not foresee: the whole story, and still an error
+            print(stderr, "simlaunch: ")
+            showerror(stderr, err, catch_backtrace())
+            println(stderr)
+        end
+        return ERROR
     end
 end

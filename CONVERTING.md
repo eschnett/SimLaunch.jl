@@ -101,7 +101,6 @@ Each of these needs a decision in the project, not a key in the spec.
   with small sizes in `vars`.
 - **Runs that share their cores unevenly**, or a pinned run beside another.
   Parallel runs share the cores by their `threads`, unpinned.
-- **Another Julia version for one run.** Not implemented.
 - **Anything decided while the job runs**: a run that depends on another
   run's result, retries. SimLaunch has no such logic by design.
 

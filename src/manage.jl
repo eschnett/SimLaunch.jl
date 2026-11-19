@@ -200,6 +200,8 @@ function clean(study::AbstractString; site::AbstractString, old_checkpoints::Boo
                yes::Bool = false, io::IO = stdout, input::IO = stdin)
     s = load_site(site)
     checkname("a study name", study)     # the snapshot on the laptop is not needed, and may be gone
+    isempty(runs) || old_checkpoints ||
+        fail("--run chooses the runs whose old checkpoints `--old-checkpoints` deletes; without it, `clean` deletes the whole study")
     check_connection(s)
     code, scratch = study_code(s, study), study_scratch(s, study)
     there = readsite(s, "for d in $(q(code)) $(q(scratch)); do [ -d \"\$d\" ] && echo \"\$d\"; done; true")
@@ -387,12 +389,17 @@ function cancel(study::AbstractString, spec::AbstractString; site::AbstractStrin
     job = only(load_jobs(study, s, [spec]))
     check_connection(s)
     stamped = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]"
-    script = strip(readsite(s, "ls $(q(joinpath(study_code(s, study), "jobs")))/$(q(job.name))-$stamped.sh 2>/dev/null | tail -n 1; true"))
-    isempty(script) && fail("no job of spec $(job.name) has been submitted on $(s.name)")
+    scripts = "$(q(joinpath(study_code(s, study), "jobs")))/$(q(job.name))-$stamped.sh"
+    isempty(strip(readsite(s, "ls $scripts 2>/dev/null; true"))) &&
+        fail("no job of spec $(job.name) has been submitted on $(s.name)")
     text = isempty(strip(message)) ? "cancelled with simlaunch cancel" : replace(strip(message), r"\s+" => " ")
-    mark() = split(readsite(s, "grep -q -- --cancelled $(q(script)) || { echo 'the batch script of spec $(job.name) was generated " *
-                               "before `simlaunch cancel` existed; cancel its job with scancel' >&2; exit 1; }; " *
-                               "bash $(q(script)) --cancelled $(q(text))"), '\n'; keepempty = false)
+    # Every batch script of the spec marks its runs: a job submitted with `--run` holds only some of them, and
+    # the newest script need not hold the runs of an older job that is still queued. A script from before
+    # `simlaunch cancel` existed cannot mark its runs.
+    mark() = split(readsite(s, "for f in $scripts; do [ -f \"\$f\" ] || continue; " *
+                               "if grep -q -- --cancelled \"\$f\"; then bash \"\$f\" --cancelled $(q(text)); " *
+                               "else echo \"\$f was generated before simlaunch cancel existed: its runs are not marked\" >&2; fi; done; true"),
+                   '\n'; keepempty = false)
     marked = Set{String}(mark())
     stopped = String[]
     for round in 1:5                                  # a job told to stop may have submitted a successor

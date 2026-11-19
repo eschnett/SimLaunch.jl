@@ -185,8 +185,14 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         table = Dict{String,Any}()
     else
         sites isa AbstractDict || fail("$file: `site` is a site's name or the tables [site.<name>]")
+        # every site's table is checked, so that a misspelt key or site is found on any site
+        for (name, t) in sites
+            t isa AbstractDict || fail("$file: [site.$name] is a table")
+            check_keys(t, SITE_KEYS, "$file, [site.$name]")
+            name == site.name || name in known_sites() ||
+                @warn "$file: [site.$name] names a site that has no profile here; known sites: $(join(known_sites(), ", "))"
+        end
         table = get(sites, site.name, Dict{String,Any}())
-        check_keys(table, SITE_KEYS, "$file, [site.$(site.name)]")
     end
     setting(key, default) = get(table, key, get(spec, key, default))
 
@@ -242,6 +248,11 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     sbatch_args = string_list(setting("sbatch_args", String[]), "$file: `sbatch_args`")
     isempty(sbatch_args) || site.slurm || fail("$file: `sbatch_args` needs a Slurm site")
     any(a -> occursin('\n', a), sbatch_args) && fail("$file: an entry of `sbatch_args` is one line")
+    for key in ("after", "combine")
+        haskey(spec, key) || continue
+        spec[key] isa AbstractDict || fail("$file: [$key] is a table with `cmd`")
+        check_keys(spec[key], ["cmd"], "$file, [$key]")
+    end
     after = get(get(spec, "after", Dict{String,Any}()), "cmd", "")
     haskey(spec, "after") && (after isa AbstractString && !isempty(strip(after)) ||
                               fail("$file: [after] needs `cmd`, a shell command"))
@@ -510,7 +521,7 @@ struct Combo
     variant::String
     env::String
     envdir::String                    # relative to the study's directory
-    args::String                      # the Julia flags, joined
+    args::String                      # the Julia flags, each quoted for bash, joined
     gpu::Bool                         # for the GPU nodes of a site that precompiles on compute nodes
     mpi::String                       # the MPI recipe the environment is built for, or ""
     arch::String                      # the architecture of the nodes it runs on: which depot holds its caches
@@ -522,6 +533,6 @@ end
 job_arch(job::Job) = queue_arch(job.site, job.queue, job.gpus > 0)
 
 "The combinations a job needs."
-combos(job::Job) = unique!([Combo(job.project, r.variant, r.env, r.envdir, join(r.julia_args, " "), job.gpus > 0, r.mpi,
+combos(job::Job) = unique!([Combo(job.project, r.variant, r.env, r.envdir, join(q.(r.julia_args), " "), job.gpus > 0, r.mpi,
                                   job_arch(job), job.site.archs[job_arch(job)], r.julia)
                             for r in job.runs])

@@ -69,8 +69,10 @@ The clusters' own MPI (the recipe `mpiabi`) needs two things that you build
 once on the cluster, so it has placeholders too: a Julia that can load the
 cluster's libraries, and
 [mpi_abi_wrapper](https://github.com/eschnett/mpi_abi_wrapper) built
-against the cluster's Open MPI. Until then the default recipe is `jll`,
-which needs neither and is several times slower between nodes. A run that
+against the cluster's Open MPI. Until then the default recipe of
+Trillium, Nibi and Fir is `jll`, which needs neither and is several times
+slower between nodes. Trillium's GPU profile has no `jll` recipe: its
+default is `mpiabi`, so a run with ranks there needs it set up. A run that
 asks for `mpiabi` before it is set up is refused. To set it up, add to your
 profile:
 
