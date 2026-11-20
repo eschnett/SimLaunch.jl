@@ -19,14 +19,22 @@ Which file new content goes in:
 - `SITES.md`: for users. The reference for every key of a site profile, and
   where profiles are looked for.
 - `CONVERTING.md`: for another project's maintainer or agent. How a
-  hand-written batch script becomes a spec, and what does not carry over.
+  hand-written batch script becomes a spec, what does not carry over, and
+  how to report a problem.
 - `CLAUDE.md`: this file. Commands, rules, repository facts. Keep it short.
-- `PLAN.md`: the design, its reasons and the milestones, with what has run
-  where. `CODE.md` (the current design) and `HISTORY.md` are split off from
-  it later.
+- `PLAN.md`: the principles, the design, its reasons and the milestones,
+  with what has run where, and the declined requests. `CODE.md` (the
+  current design) and `HISTORY.md` are split off from it later.
 - `TODO.md`, if present, is Erik's own list: do not modify it.
 
 Keep the tables of contents current.
+
+Requests come from other agents, as reports in
+`~/.local/share/simlaunch/reports/` or through Erik. Weigh each against
+PLAN.md's "Principles" and "Declined requests", sort it (bug, missing guard,
+gap, convenience, against a principle) and propose before writing code; a
+decline goes into "Declined requests" with its reason. A report that has
+been dealt with moves to `reports/done/`.
 
 ## Commands
 

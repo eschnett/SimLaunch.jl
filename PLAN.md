@@ -10,6 +10,7 @@ run where.
 **Contents**
 
 - [Summary](#summary)
+- [Principles](#principles)
 - [The problem](#the-problem)
 - [What the other packages need](#what-the-other-packages-need)
 - [Concepts](#concepts)
@@ -23,6 +24,7 @@ run where.
 - [Implementation](#implementation)
 - [Migrating the existing scripts](#migrating-the-existing-scripts)
 - [Non-goals](#non-goals)
+- [Declined requests](#declined-requests)
 - [What has run where](#what-has-run-where)
 - [Plan and open questions](#plan-and-open-questions)
 
@@ -70,6 +72,49 @@ the laptop (done); then the other sites and the device environments (done,
 except for two runs that wait on Nibi and on Symmetry's CPU nodes); then
 queue rules, status, fetch and restarts; then the existing scripts are
 rewritten on top of it one at a time.
+
+## Principles
+
+What SimLaunch holds to. Every request, from Erik or from an agent that
+uses SimLaunch, is weighed against these. A request that breaks one is
+declined ([Declined requests](#declined-requests)), or it changes the
+principle here, on purpose and with its reason.
+
+1. **A study is one snapshot, never changed.** Its name stands for exactly
+   the sources it was taken from, on every site, so a result can always be
+   traced to its code. A changed source, even one script, is a new study.
+   `prepare` and `submit` refuse a site's copy that is not the snapshot.
+   Only `tools/`, SimLaunch's own files, is written again by `prepare`.
+2. **Outputs are immutable once their job has ended.** Every job writes a
+   directory of its own; a restart reads its predecessor's checkpoint
+   without touching it; combining is a step of its own.
+3. **Sources are shared between sites; setup is not.** Each site resolves
+   its own manifests, and cores, threads, memory and time are in a table
+   per site. Manifests and compiled caches never go from one site to
+   another.
+4. **A study compiles for itself:** one depot per architecture of the site,
+   never `~/.julia` or another study's.
+5. **The laptop keeps the record; a site keeps plain files.** Nothing on a
+   cluster has to be installed or kept running. Generated scripts are plain
+   bash, for bash 3.2 too, and run without SimLaunch. There is no daemon
+   and no database.
+6. **Refuse, never guess, never ignore.** A key that is not implemented is
+   refused by name. A job a site cannot hold is refused before it reaches
+   the queue, with the reason and the way out. Where something is left out
+   on purpose, a scan's thread counts that do not fit a node, it is said.
+7. **Where and how, not what.** SimLaunch decides where and how a command
+   runs, and nothing about what it computes. Drivers parse their own
+   arguments. Repetition in a spec is written in Julia, not in a template
+   language of SimLaunch's.
+8. **What others see is the user's step.** Submitting, cancelling and
+   deleting on a site happen when the user asks, and an agent asks the user
+   first, each time. SimLaunch never pushes, posts or files anything.
+9. **Facts about a cluster live in its profile**, not in the code. The
+   profiles in `sites/` are public clusters with nothing of a user in them.
+10. **Few concepts.** A new key, command or flag has to show that the
+    existing ones cannot do the job. Extending a concept is better than
+    adding one, and replacing one is better than both. A refusal with a
+    clear message is better than a feature that makes a mistake convenient.
 
 ## The problem
 
@@ -1325,6 +1370,31 @@ computes. Explicitly out of scope:
   commit-status post. Those stay explicit, asked-for steps.
 - **Hiding the cluster.** `--dry-run` shows every script, and a job can always
   be submitted by hand from the study's `jobs/` directory.
+
+## Declined requests
+
+Requests that were weighed and declined, with the reason and what is done
+instead, so that they need not be argued again. A request that comes back
+with a reason not given here is weighed again, and this list says the
+outcome. Reports from agents come in as CONVERTING.md, "Reporting a
+problem", describes; each is sorted as one of:
+
+- **a bug**: SimLaunch broke its own rules or its documentation. Fixed.
+- **a missing guard**: a mistake could go unnoticed. Usually a refusal with
+  a message that names the right way, not a feature.
+- **a gap**: a real use the concepts do not cover. An existing concept is
+  extended where it can be.
+- **a convenience**: waits until it comes up again.
+- **against a principle**: declined, and listed here.
+
+| Request | When, from | Why not | Instead |
+| --- | --- | --- | --- |
+| Refresh one script in a prepared study (`amend`) | 2026-11-20, TreeGRRMHD | Principle 1: runs from before and after the change would share a name but ran different code, and the study would no longer name its sources | A new study. `prepare` and `submit` refuse a copy changed on the site |
+| A key for a product of runs | 2026-11-17, TreeAMR | It grows into a language: substitution, quoting, exclusions, conditions (principle 7) | A spec in Julia |
+| `after --checkout`: run the after-script from the project as it is now | Dropped 2026-11-19 | Its output came from code in no snapshot (principle 1) | Run the corrected script on the laptop over what `fetch` brought back |
+| Agents delete their own studies without asking | 2026-11-19, Erik | Which studies are an agent's own is hard to say once its session is gone | `delete` asks every time, and only Erik answers. Agents propose deletions after `simlaunch list` |
+| Old checkpoints deleted by SimLaunch, or by a job, on its own | Open questions below, Erik | Deleting is the user's step (principle 8) | `delete --old-checkpoints` |
+| A live measurement of disk usage in SimWatch | Open questions below, Erik | A measurement on a site is not SimWatch's to make, and would run all the time | `diskusage` written when a job ends; `simlaunch usage --measure` |
 
 ## What has run where
 

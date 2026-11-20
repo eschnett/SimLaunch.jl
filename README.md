@@ -26,6 +26,8 @@ on all four, and TreeAMR's benchmarks on Symmetry. Restart chains and the
 commands that follow a job (`status`, `fetch`, `wait`) have run on one
 cluster, with a toy project.
 ["What has run where"](PLAN.md#what-has-run-where) in the plan has the details.
+A problem with SimLaunch, or a request: see
+["Reporting a problem"](CONVERTING.md#reporting-a-problem).
 
 ## Installation
 
@@ -267,4 +269,6 @@ that still appends to its old output runs with `mutable_restarts = true`
 
 ## Design
 
-[`PLAN.md`](PLAN.md) has the design, its reasons and the plan.
+[`PLAN.md`](PLAN.md) has the design, its reasons and the plan: first the
+[principles](PLAN.md#principles) SimLaunch holds to, and later the
+[requests that were declined](PLAN.md#declined-requests), with why.

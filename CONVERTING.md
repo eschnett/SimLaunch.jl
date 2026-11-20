@@ -10,6 +10,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 - [What does not carry over](#what-does-not-carry-over)
 - [Checking the conversion](#checking-the-conversion)
 - [In CI](#in-ci)
+- [Reporting a problem](#reporting-a-problem)
 
 ## Before you start
 
@@ -154,3 +155,51 @@ of a run that did not finish, and fails the step unless every run has
 finished. This checks the spec and the command it names, not the cluster's
 part: queues, modules and launchers are only exercised there. For the
 project's test suite itself, `Pkg.test` in CI stays the simpler way.
+
+## Reporting a problem
+
+When SimLaunch is in the way (it did something wrong, cannot express what
+the script did, or costs you time), write a report. Reports are read
+together, in batches, and weighed against SimLaunch's
+[principles](PLAN.md#principles); many end as a fix, a clearer refusal
+or a line in the documentation rather than a new feature.
+
+- **Before you write**, look in [Declined requests](PLAN.md#declined-requests).
+  A request listed there needs a reason that is not given there.
+- **One problem per report**, as a file in
+  `~/.local/share/simlaunch/reports/`, named
+  `<yyyy-mm-dd>-<project>-<topic>.md`, such as
+  `2026-11-20-TreeGRRMHD-scan-label.md`. Where you cannot write there, put
+  the report in your message to Erik, in the same form.
+- **Report the problem, not only your solution.** A proposal is welcome,
+  but it is read as one way out, not as the request.
+- **Say what you did instead**, above all anything done by hand on a site.
+  Never change a study's copy there: `prepare` and `submit` refuse it. A
+  fix to the project is a new snapshot.
+- **No GitHub issues, comments or posts** about SimLaunch, unless Erik asks
+  for one.
+
+```markdown
+# <what went wrong, in one line, not what to add>
+
+Kind: bug | gap | friction
+Project: <name and commit>, study <study>, site <site>
+SimLaunch: <the output of `simlaunch version`>
+How often: <once, or each time>
+
+## What I was doing
+<the goal, in a sentence or two>
+
+## What happened
+<the commands and their output, shortened but verbatim; job IDs>
+
+## What I did instead
+<the workaround, and where its traces are: files, HISTORY.md, jobs>
+
+## What would help (optional)
+<a proposal>
+```
+
+`bug`: SimLaunch did something wrong, or other than its documentation says.
+`gap`: something the project needs that a spec or a command cannot say.
+`friction`: it works, but costs time or is easy to get wrong.
