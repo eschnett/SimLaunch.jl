@@ -69,7 +69,7 @@ sw_write() {
     f=$dir/simwatch.toml
     tmp=$f.tmp.$$.$RANDOM
     {
-        echo "name = \"$STUDY $SPEC/${LABELS[$i]}\""
+        echo "name = \"$SPEC/${LABELS[$i]}\""         # the study is the group
         echo "status = \"$status\""
         echo "code = \"SimLaunch\""
         echo "group = \"$STUDY\""
@@ -231,7 +231,7 @@ sw_queued() {
     if [ -f "$dir/.simlaunch-job" ]; then read -r id _ < "$dir/.simlaunch-job"; fi
     if [ "$id" = "$JOBID" ]; then return 0; fi
     {
-        echo "name = \"$STUDY $SPEC/${LABELS[$i]}\""
+        echo "name = \"$SPEC/${LABELS[$i]}\""         # the study is the group
         echo "status = \"queued\""
         echo "code = \"SimLaunch\""
         echo "group = \"$STUDY\""

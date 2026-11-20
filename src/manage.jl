@@ -42,7 +42,8 @@ The label is the one the run's SimWatch file gives. A name that matches no run t
 function chosen_runs(s::Site, study, names)
     labels = Dict{String,String}()
     for (run, text) in run_files(s, study, "simwatch.toml")
-        m = match(r"^name = \"[^ \"]+ [^/\"]+/([^\"]*)\"$"m, text)
+        # `<spec>/<label>`, or `<study> <spec>/<label>` as before 2026-11-20
+        m = match(r"^name = \"(?:[^ \"]+ )?[^/\" ]+/([^\"]*)\"$"m, text)
         labels[run] = m === nothing ? "" : m[1]
     end
     runs, missing = String[], String[]

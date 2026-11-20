@@ -914,7 +914,10 @@ environment, so they differ in the package only.
   own SimWatch file into `$SIMLAUNCH_SIMWATCH_DIR`, hidden in its job
   directory so that SimWatch does not show it as a second simulation, and
   the job merges it into the run's file every minute, its own keys winning
-  (Erik, 2026-11-20);
+  (Erik, 2026-11-20). A run's SimWatch `name` is `<spec>/<label>` and its
+  `group` the study: SimWatch cuts names longer than about 30 characters,
+  and `<study> <spec>/<label>` repeated the Group column (2026-11-20;
+  `--run` still reads the older names);
 - for `checkpoints = true`: `--no-requeue`, the earlier job directories made
   read-only, the newest complete checkpoint among them passed as the restart
   source, the restart and walltime arguments, and on pre-emption a successor

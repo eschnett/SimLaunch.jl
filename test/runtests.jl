@@ -939,7 +939,7 @@ end
                    iteration = 3
                    time = 1.5
                    time_end = 6.0
-                   walltime = 1
+                   walltime = 12345
 
                    [err]
                    l2 = 0.25
@@ -958,7 +958,7 @@ end
             st = only(wait_for(scratch, ["prog-p"]))
             @test st["status"] == "finished" && st["message"] == "finished in 001-$jobid"   # ours, once it has ended
             @test st["progress"]["iteration"] == 3 && st["progress"]["time"] == 1.5 && st["progress"]["time_end"] == 6.0
-            @test st["progress"]["fraction"] == 1.0 && st["progress"]["walltime"] != 1     # ours win
+            @test st["progress"]["fraction"] == 1.0 && st["progress"]["walltime"] < 12345  # ours win
             @test st["summary"] == ["err.l2", "progress.iteration"] && st["err"]["l2"] == 0.25
             @test only(st["images"])["file"] == "001-$jobid/.simwatch/plots/a.png"
             @test !haskey(st, "slurm") && st["resources"]["threads"] == 1
