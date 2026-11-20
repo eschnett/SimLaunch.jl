@@ -9,6 +9,7 @@ to a spec, and [`PLAN.md`](PLAN.md) the reasons.
 - [Top level](#top-level)
 - [What a job needs](#what-a-job-needs)
 - [Runs](#runs)
+  - [A run's progress in SimWatch](#a-runs-progress-in-simwatch)
 - [Environments](#environments)
   - [Julia versions](#julia-versions)
 - [MPI and placement](#mpi-and-placement)
@@ -136,6 +137,37 @@ own label (`scan`) names all its runs (`scan-t1`, `scan-t2`, …), here and in
 `prepare --run` prepares the same runs, and `wait`, `after`, `combine` and
 `resubmit` take `--run` too. `cancel` needs none: it reads only the spec's
 `name`.
+
+### A run's progress in SimWatch
+
+Each run has one SimWatch file, written by the job: its state, host, wall
+time, resources and Slurm jobs. The job cannot know how far the program
+has come. A program that reports its progress writes a SimWatch file of its
+own into `$SIMLAUNCH_SIMWATCH_DIR`, a hidden directory in its job directory.
+The job merges it into the run's file each minute and when the run ends:
+
+- the program's `[progress]` (`iteration`, `time`, `time_end`, `time_unit`,
+  `fraction`, `speed`, …): SimWatch's Iter, Time, %, Speed and ETA columns;
+- its `summary`, the tables that `summary` names and any other tables, and
+  `[[images]]`, whose files are relative to `$SIMLAUNCH_SIMWATCH_DIR`;
+- its `message` while the run runs.
+
+The job's own keys win: the state, the times, `fraction = 1.0` once the
+run has finished, `[resources]` (the program can add `memory_bytes`),
+`[slurm]` and `[diskusage]`. In Julia, SimWatch's
+[`SimWatchStatus.jl`](https://github.com/eschnett/simwatch/blob/main/writers/julia/SimWatchStatus.jl)
+writes such a file. The program writes it only under SimLaunch, and only
+on one MPI rank:
+
+```julia
+dir = get(ENV, "SIMLAUNCH_SIMWATCH_DIR", outdir)   # outdir: where the program writes without SimLaunch
+sw = SimWatchWriter(dir; name = label, summary = ["constraints.ham_l2"])
+simwatch_update!(sw; iteration = n, time = t, time_end = t_end, time_unit = "M",
+                 extra = Dict("constraints" => Dict("ham_l2" => ham)))
+```
+
+A program that writes into its job directory instead appears in SimWatch
+as a second simulation beside the run.
 
 ## Environments
 

@@ -928,6 +928,42 @@ end
             @test SimLaunch.command(["after", "toy", f, "--site", "local"]) == 0
         end
 
+        @testset "a program's own SimWatch file, merged into the run's" begin
+            code = """
+                   write(joinpath(ENV["SIMLAUNCH_SIMWATCH_DIR"], "simwatch.toml"), \"\"\"
+                   status = "finished"
+                   message = "step 3"
+                   summary = ["err.l2", "progress.iteration"]
+
+                   [progress]
+                   iteration = 3
+                   time = 1.5
+                   time_end = 6.0
+                   walltime = 1
+
+                   [err]
+                   l2 = 0.25
+
+                   [[images]]
+                   file = "plots/a.png"
+
+                   [slurm]
+                   job_id = "1"
+                   \"\"\")
+                   """
+            f = joinpath(root, "prog.toml")
+            open(io -> TOML.print(io, Dict("name" => "prog", "site" => Dict("local" => Dict("threads" => 1)),
+                                           "run" => [Dict("label" => "p", "cmd" => "-e '$code'")])), f; write = true)
+            jobid = submit("toy", f; site = "local", io = devnull)
+            st = only(wait_for(scratch, ["prog-p"]))
+            @test st["status"] == "finished" && st["message"] == "finished in 001-$jobid"   # ours, once it has ended
+            @test st["progress"]["iteration"] == 3 && st["progress"]["time"] == 1.5 && st["progress"]["time_end"] == 6.0
+            @test st["progress"]["fraction"] == 1.0 && st["progress"]["walltime"] != 1     # ours win
+            @test st["summary"] == ["err.l2", "progress.iteration"] && st["err"]["l2"] == 0.25
+            @test only(st["images"])["file"] == "001-$jobid/.simwatch/plots/a.png"
+            @test !haskey(st, "slurm") && st["resources"]["threads"] == 1
+        end
+
         @testset "a site that precompiles in a job, and an environment" begin
             cluster = load_site("cluster")
             cscratch, ccode = study_scratch(cluster, "toy"), study_code(cluster, "toy")

@@ -64,7 +64,7 @@ usage_kb() {
 
 # sw_write RUN-INDEX STATUS MESSAGE [NEXT-JOB]: rewrite the run's simwatch.toml.
 sw_write() {
-    local i=$1 status=$2 message=$3 next=${4:-} dir f tmp prev
+    local i=$1 status=$2 message=$3 next=${4:-} dir f tmp prev prog
     dir=$(run_dir "$i")
     f=$dir/simwatch.toml
     tmp=$f.tmp.$$.$RANDOM
@@ -106,8 +106,76 @@ sw_write() {
             if [ -n "$prev" ]; then echo "previous_job_ids = [$prev]"; fi
             if [ -n "$next" ]; then echo "next_job_id = \"$next\""; fi
         fi
-    } > "$tmp" && mv -f "$tmp" "$f"
+    } > "$tmp" || return 0
+    prog=${JOBDIRS[$i]:-}/.simwatch/simwatch.toml
+    if [ -n "${JOBDIRS[$i]:-}" ] && [ -f "$prog" ] && [ "$(wc -c < "$prog")" -le 131072 ]; then
+        if sw_merge "$tmp" "$prog" "$status" "$(basename "${JOBDIRS[$i]}")" > "$tmp.m"; then
+            mv -f "$tmp.m" "$tmp"
+        else
+            rm -f "$tmp.m"
+        fi
+    fi
+    mv -f "$tmp" "$f"
     return 0
+}
+
+# sw_merge OURS PROGRAM STATUS JOBDIR-NAME: our SimWatch file with what the
+# program reports in its own, $SIMLAUNCH_SIMWATCH_DIR/simwatch.toml: its
+# progress, summary and tables. Our keys win, but for the program's message
+# while it runs; its [slurm] and [diskusage] are left out, and its images are
+# found in its directory. Reads TOML line by line, as SimWatch's writers and
+# TOML.print write it: one key a line, a header on a line of its own.
+sw_merge() {
+    awk -v status="$3" -v jd="$4" '
+        function keyof(s) {
+            if (s !~ /^[ \t]*("[^"]*"|[A-Za-z0-9_.-]+)[ \t]*=/) return ""
+            sub(/^[ \t]*/, "", s); sub(/[ \t]*=.*$/, "", s); return s
+        }
+        FNR == 1 { f++; k = 0; nsec[f] = 0 }
+        /^[ \t]*$/ { next }
+        /^[ \t]*\[/ {
+            k = ++nsec[f]; head[f, k] = $0
+            name = $0; sub(/^[ \t]*/, "", name); sub(/\][^]]*$/, "]", name)
+            sname[f, k] = name
+            if (!((f, name) in idx)) idx[f, name] = k
+            next
+        }
+        {
+            key = keyof($0)
+            if (key == "" && $0 !~ /^[ \t]*#/ && ne[f, k] > 0) { entry[f, k, ne[f, k]] = entry[f, k, ne[f, k]] "\n" $0; next }
+            j = ++ne[f, k]; entry[f, k, j] = $0; ekey[f, k, j] = key
+            if (key != "") pos[f, k, key] = j
+        }
+        # our entries of section a, then the keys of the program section b that we lack
+        function merged(a, b,   j, key) {
+            for (j = 1; j <= ne[1, a]; j++) {
+                key = ekey[1, a, j]
+                if (key == "message" && status == "running" && b >= 0 && ((2, b, key) in pos)) print entry[2, b, pos[2, b, key]]
+                else print entry[1, a, j]
+            }
+            if (b < 0) return
+            for (j = 1; j <= ne[2, b]; j++) {
+                key = ekey[2, b, j]
+                if (key != "" && !((1, a, key) in pos)) print entry[2, b, j]
+            }
+        }
+        END {
+            merged(0, 0)
+            for (k = 1; k <= nsec[1]; k++) {
+                print ""; print head[1, k]
+                merged(k, ((2, sname[1, k]) in idx) ? idx[2, sname[1, k]] : -1)
+            }
+            for (k = 1; k <= nsec[2]; k++) {
+                name = sname[2, k]
+                if (((1, name) in idx) || name ~ /^\[(slurm|diskusage)[].]/) continue
+                print ""; print head[2, k]
+                for (j = 1; j <= ne[2, k]; j++) {
+                    line = entry[2, k, j]
+                    if (name == "[[images]]" && ekey[2, k, j] == "file") sub(/=[ \t]*"/, "= \"" jd "/.simwatch/", line)
+                    print line
+                }
+            }
+        }' "$1" "$2"
 }
 
 # sw_status RUN-INDEX: the status in the run's simwatch.toml, or nothing.
@@ -301,6 +369,10 @@ run_one() {
             RESTART_ARGS+=("$RESTART_WALLTIME=$(( TIME_LIMIT - MARGIN - ($(date +%s) - SW_T0) ))")
         fi
     fi
+    # where the program may write its own SimWatch file, merged into the run's; hidden, so that SimWatch
+    # does not show it beside the run
+    export SIMLAUNCH_SIMWATCH_DIR=$jobdir/.simwatch
+    mkdir -p "$SIMLAUNCH_SIMWATCH_DIR"
     sw_write "$i" running "running in $(basename "$jobdir")"
     ( while sleep 60; do sw_write "$i" running "running in $(basename "$jobdir")"; done ) &
     heartbeat=$!

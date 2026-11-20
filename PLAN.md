@@ -909,7 +909,12 @@ environment, so they differ in the package only.
 - a check before each run that its environment is precompiled for this Julia
   and these flags;
 - SimWatch: one live status file per run, marked running, then finished or
-  failed with the exit code;
+  failed with the exit code. The job cannot know a program's progress, which
+  SimWatch's Iter, Time, %, Speed and ETA columns show: a program writes its
+  own SimWatch file into `$SIMLAUNCH_SIMWATCH_DIR`, hidden in its job
+  directory so that SimWatch does not show it as a second simulation, and
+  the job merges it into the run's file every minute, its own keys winning
+  (Erik, 2026-11-20);
 - for `checkpoints = true`: `--no-requeue`, the earlier job directories made
   read-only, the newest complete checkpoint among them passed as the restart
   source, the restart and walltime arguments, and on pre-emption a successor

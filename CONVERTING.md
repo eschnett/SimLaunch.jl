@@ -85,6 +85,7 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
 | `$OUT/<stem>.tsv`, one output file per run | each run's `output.log`, in its own job directory; files the script writes land there too |
 | A table printed at the end (`awk` over the outputs) | `[after] cmd`. `simlaunch after` prints it again later; a corrected script runs on the laptop over what `simlaunch fetch` brought back |
 | The project's copy of `simwatch.sh`, stages | nothing: every run has a SimWatch file, written by the job |
+| A program that writes its own `simwatch.toml` (iteration, time, summary) | the same file, in `$SIMLAUNCH_SIMWATCH_DIR` when that is set: the job merges it into the run's. See "A run's progress in SimWatch" in `SPEC.md` |
 | `rsync` of the checkout to the cluster, a fixed tree there | `snapshot` and `prepare` |
 | `--requeue`, `--open-mode=append`, a resume-from-checkpoint option | `checkpoints = true` and `[restart]`; see "Restarts" in `SPEC.md` |
 | `scp` of the results back | `simlaunch fetch` |
