@@ -121,9 +121,18 @@ CPU a run got is in its `simlaunch-job.toml`.
 | `ranks` | none | MPI ranks; the run is then started by its recipe's launcher |
 | `nodes` | the job's nodes with `ranks`, else 1 | The nodes the run's ranks are spread over |
 
+A list of `threads` is a scan: one run per count, written once for every
+site. Its counts that the node cannot hold (more threads, times the run's
+ranks on a node, than the node's cores, or than the NUMA domains it is bound
+to have) are left out on that site, and `prepare`, `submit` and
+`--dry-run` say which; if none fits, the spec is refused. A run that is not
+a scan, or a scan's run named by itself with `--run`, must fit.
+
 `submit --run <label>` submits only the named runs, and only they are
 checked against the site: a spec may hold a run that needs a recipe or a
-placement another site has, as long as that run is not named here.
+placement another site has, as long as that run is not named here. A scan's
+own label (`scan`) names all its runs (`scan-t1`, `scan-t2`, …), here and in
+`fetch --run` and `delete --run`.
 `prepare --run` prepares the same runs, and `wait`, `after`, `combine` and
 `resubmit` take `--run` too. `cancel` needs none: it reads only the spec's
 `name`.
@@ -339,7 +348,8 @@ runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi =
 `submit` refuses a job before it reaches the queue when
 
 - a run asks for more threads, times its ranks on a node, than the node or
-  the GPUs' share has cores, or parallel runs together do;
+  the GPUs' share has cores, or parallel runs together do (a scan's counts
+  that do not fit are left out instead, see [Runs](#runs));
 - no queue takes its time, nodes or GPUs, with each queue's reason;
 - a named queue does not fit: too long, too short, too many nodes or GPUs,
   pre-emptible without checkpoints;
@@ -347,6 +357,8 @@ runs = [(label = "$v-g$g-$m-$p", cmd = "bench/nested.jl $v $p", ranks = g, mpi =
   profile, and the spec asks for them;
 - the study is not prepared on the site for an environment or for Julia
   options the spec uses;
+- the study's copy on the site is not its snapshot: a file was changed or
+  removed there, or it is another snapshot of the same name;
 - a job of a spec with checkpoints is queued or running already.
 
 Memory is not checked.

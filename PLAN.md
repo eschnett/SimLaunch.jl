@@ -358,6 +358,17 @@ site, so every site of a study runs identical sources. A changed source makes
 a new study, so a running job never sees its package image rewritten;
 `simlaunch snapshot` refuses a study name that already exists.
 
+The site's copy is checked against the snapshot, by its files' contents
+(`rsync -c -n`, `check_site_copy` in `src/actions.jl`), by `prepare` and
+before each `submit`. Two cases are refused. A file changed on the site by
+hand would run code the study's record does not describe, so a script
+cannot be refreshed in place: the fix is a new study. And a snapshot taken
+again under the name of one whose laptop copy was removed would find the
+old one's `prepared` lines and compiled caches on the site and pass for
+compiled; `prepare` names both snapshots' times and `simlaunch delete
+<study> --site <site>` clears the old one. Files only on the site, such as
+manifests and environments, are not compared, nor is `tools/`.
+
 One part of a study does change: its `tools/`, the Julia files of SimLaunch
 that set up and check environments and start MPI ranks (`TOOLS` in
 `src/snapshot.jl`). Each `prepare` writes the current SimLaunch's copies over

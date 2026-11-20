@@ -25,7 +25,8 @@ const USAGE = """
                        [--chain <n>] [--wait [--poll <seconds>]] [--dry-run]
           Generate the batch script and submit it. --dry-run only prints it.
           --wait then waits as `simlaunch wait` does.
-          --run submits only the named runs, for a site that cannot hold them all.
+          --run submits only the named runs, for a site that cannot hold them all;
+          a scan's label names all its runs.
           --chain queues <n> jobs of a spec with checkpoints, one after another.
       simlaunch resubmit <study> <spec.toml> --site <site> [--queue <queue>] [--run <label>]... [--chain <n>]
                          [--wait [--poll <seconds>]]
@@ -38,7 +39,8 @@ const USAGE = """
       simlaunch fetch <study> [--site <site>] [--run <run>]... [--with-checkpoints]
                       [--max-size <size>] [--to <directory>]
           Copy results to simlaunch-data/<study>/<site>/ in the study's project, or to <directory>.
-          --run names a run, <spec>-<label>, or a label, for that run of every spec.
+          --run names a run, <spec>-<label>, or a label, for that run of every spec, or a scan's
+          label, for all its runs.
       simlaunch usage <study> [--site <site>] [--measure]
           What the study's runs hold on disk, as each job recorded it.
       simlaunch list [--site <site>]... [--older-than <age>]

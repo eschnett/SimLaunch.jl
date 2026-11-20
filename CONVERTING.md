@@ -39,7 +39,9 @@ scripts in TreeAMR's `bench/`. [`SPEC.md`](SPEC.md) is the reference for every k
    `--variant <name>=<directory>` for each further version the script
    compares. The note is how a study is recognised later, in
    `simlaunch list` and in SimWatch, after the session that made it is gone:
-   always give one.
+   always give one. A fix to the project afterwards, even to one script,
+   is a new snapshot under a new name: never edit the copy on a site,
+   which `prepare` and `submit` then refuse.
 4. **Look at the result without a cluster**:
    `simlaunch submit <study> jobs/<name>.toml --site <site> --dry-run`
    prints the queue it chose and the whole batch script. Compare it with

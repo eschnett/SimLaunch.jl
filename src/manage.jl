@@ -36,8 +36,8 @@ end
 
 """
 The runs of a study on a site that `--run` names: each name is a run's (`hello-n3`) or a label (`n3`), which
-names the run of that label in every spec. The label is the one the run's SimWatch file gives. A name
-that matches no run there is in `missing`.
+names the run of that label in every spec, or a scan's label (`scan`), which names all its runs (`scan-t4`).
+The label is the one the run's SimWatch file gives. A name that matches no run there is in `missing`.
 """
 function chosen_runs(s::Site, study, names)
     labels = Dict{String,String}()
@@ -49,6 +49,8 @@ function chosen_runs(s::Site, study, names)
     for n in names
         checkname("a run's name or label", n)
         hits = haskey(labels, n) ? [n] : sort!([r for (r, l) in labels if l == n])
+        # else a scan's label: all its runs, labelled `<label>-t<threads>`
+        isempty(hits) && (hits = sort!([r for (r, l) in labels if occursin(Regex("^\\Q$n\\E-t\\d+\$"), l)]))
         isempty(hits) ? push!(missing, n) : append!(runs, hits)
     end
     return unique!(runs), missing

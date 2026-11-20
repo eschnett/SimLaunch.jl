@@ -66,7 +66,8 @@ simlaunch submit s1 jobs/s1-sweep.toml --site trillium
 
 `--site local` runs the same study on the laptop, as a background process
 under the same directory layout. A study is never rewritten: a changed source
-needs a new study name.
+needs a new study name. `prepare` and `submit` refuse a copy on the site that
+someone changed there, or that is another snapshot of the same name.
 
 Each study has its own compiled caches on a site, one depot per architecture
 of the site's nodes (`<code>/<study>/depot-<architecture>/`), so preparing one
@@ -143,10 +144,11 @@ project's own `Project.toml` is not changed. The cores and the memory of a
 GPU job follow from the site's profile.
 
 `cmd` is a script of the project and its arguments, started in the run's job
-directory. Per run: `threads` (a list makes one run per count), `julia` (a
+directory. Per run: `threads` (a list makes one run per count, a scan), `julia` (a
 Julia version or juliaup channel, such as `"1.13"`), `julia_args` and `vars`. `submit --run <label>` submits only the named runs, for a site
-that cannot hold them all, and `prepare --run` prepares just those. `submit` refuses a job that asks for more cores than its
-allocation has, or more time or nodes than its queue allows.
+that cannot hold them all, and `prepare --run` prepares just those; a scan's label names all its runs. `submit` refuses a job that asks for more cores than its
+allocation has, or more time or nodes than its queue allows. Only a scan's counts that do not fit the node are left out instead, and
+`prepare` and `submit` say which.
 
 The queue is the first in the site's profile that fits the job; `--queue`
 names another. On Trillium that is `debug` for a job of up to an hour while

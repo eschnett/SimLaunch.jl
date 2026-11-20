@@ -517,6 +517,27 @@ function push_tree(site::Site, src, dst)
     return
 end
 
+"""
+The files of the local directory `src` whose contents differ from those under `dst` on the site, and
+those missing there: `(; differ, missing)`, as paths relative to both. Files only on the site are not
+looked at. `dst` must exist.
+"""
+function tree_differences(site::Site, src, dst; exclude = String[])
+    out = IOBuffer()
+    excludes = ["--exclude=$e" for e in exclude]
+    # a dry run that compares the files' contents (-c), not their times, and lists what it would copy
+    success(pipeline(`rsync -rlcn --out-format="%i %n" $excludes $(src * "/") $(rsync_target(site, dst * "/"))`;
+                     stdout = out, stderr)) ||
+        fail("comparing $src with $(site.name):$dst failed (rsync's message is above); try again")
+    differ, missing = String[], String[]
+    for line in split(String(take!(out)), '\n'; keepempty = false)
+        m = match(r"^[<>ch.*][fLDS](\S*) (.*)$", line)       # a file's line; directories are left aside
+        m === nothing && continue
+        push!(occursin("+++", m[1]) ? missing : differ, m[2])
+    end
+    return (; differ, missing)
+end
+
 "Copy one local file to the path `dst` on the site."
 function push_file(site::Site, src, dst)
     runsite(site, "mkdir -p " * q(dirname(dst)))

@@ -393,6 +393,42 @@ function report_versions(io::IO, site::Site, study, needed)
 end
 
 """
+    check_site_copy(site, study; copying = false)
+
+Refuse a copy of the study on the site that is not its snapshot: another
+snapshot of the same name, whose environments and compiled caches would
+pass for this one's, or sources someone changed there. A changed source is
+a new study. With `copying`, for `prepare`, files missing there are fine,
+and so is a site without the study; else the copy must be whole. `tools/`
+is not compared: `prepare` writes SimLaunch's own there.
+"""
+function check_site_copy(site::Site, study; copying::Bool = false)
+    code = study_code(site, study)
+    if strip(readsite(site, "[ -d $(q(code)) ] && echo yes; true")) != "yes"
+        copying && return
+        fail("study $study has not been copied to $(site.name); run `simlaunch prepare $study --site $(site.name)`")
+    end
+    here = joinpath(cache_root(), study)
+    d = tree_differences(site, here, code; exclude = ["/tools/"])
+    some(paths) = join(first(paths, 5), ", ") * (length(paths) > 5 ? " and $(length(paths) - 5) more" : "")
+    if "snapshot.toml" in d.differ
+        taken(text) = (m = match(r"^created = \"([^\"]*)\""m, text); m === nothing ? "at another time" : "on " * m[1])
+        there = readsite(site, "cat " * q(joinpath(code, "snapshot.toml")) * " 2>/dev/null; true")
+        fail("$(site.name) holds another snapshot named $study, taken $(taken(there)); this one was taken ",
+             "$(taken(read(joinpath(here, "snapshot.toml"), String))). Its environments and compiled caches are not this ",
+             "one's. Snapshot again under another name, or first delete the old one there: ",
+             "`simlaunch delete $study --site $(site.name)`, which deletes its results too")
+    end
+    isempty(d.differ) ||
+        fail("the copy of study $study on $(site.name) differs from its snapshot in ", some(d.differ),
+             ": it was changed there. A changed source is a new study: `simlaunch snapshot` it under another name")
+    copying || isempty(d.missing) ||
+        fail("the copy of study $study on $(site.name) lacks ", some(d.missing),
+             "; run `simlaunch prepare $study --site $(site.name)`")
+    return
+end
+
+"""
     prepare(study; site, specs = [])
 
 Copy the study to the site, instantiate it there, and precompile it: for
@@ -406,6 +442,7 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     isempty(only_runs) || length(specs) == 1 || fail("`--run` names runs of one spec: give exactly one `--spec`")
     needed = Combo[]
     for job in load_jobs(study, s, specs; only_runs)
+        report_left_out(io, job)
         append!(needed, combos(job))
     end
     if isempty(specs)
@@ -416,6 +453,7 @@ function prepare(study::AbstractString; site::AbstractString, specs = String[], 
     end
     unique!(needed)
     check_connection(s)
+    check_site_copy(s, study; copying = true)
 
     code = study_code(s, study)
     println(io, "copying study $study to $(s.name):$code")
@@ -462,6 +500,15 @@ function describe(io::IO, job::Job)
         notes = [r.envdir == joinpath("src", job.project) ? "" : r.envdir, r.placement]
         println(io, "  $(rpad(r.label, width)) $shape   ", join(r.cmd, " "),
                 all(isempty, notes) ? "" : "   [" * join(filter(!isempty, notes), ", ") * "]")
+    end
+    report_left_out(io, job)
+    return
+end
+
+"Say which runs of a scan the site leaves out, as they do not fit its node."
+function report_left_out(io::IO, job::Job)
+    for l in job.left_out
+        println(io, "left out on $(job.site.name), spec $(job.name): run $l")
     end
     return
 end
@@ -552,6 +599,8 @@ function submit_job(job::Job, spec; chain::Integer = 1, successor::Bool = true, 
         fail("study $study is not prepared on $(s.name) for $(combo_text(combo))",
              "; run `simlaunch prepare $study --site $(s.name) --spec $spec`")
     end
+    check_site_copy(s, study)
+    report_left_out(io, job)
     if job.checkpoints
         active = active_jobs(s, study, job.name)
         isempty(active) ||

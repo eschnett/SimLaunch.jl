@@ -54,6 +54,7 @@ struct Job
     after::String                     # a shell command run after the last run, or ""
     combine::Vector{String}           # the project's combine script and its arguments
     description::String               # for SimWatch: the spec's, else the study's note, or ""
+    left_out::Vector{String}          # a scan's runs that do not fit the node, and why
     runs::Vector{Run}
 end
 
@@ -176,10 +177,12 @@ end
 
 Turn the parsed spec into the job it means on `site`. `project` is the
 study's own project, the default for the spec's `project`. `only_runs` keeps
-the runs with these labels, for a site that cannot hold them all. `variants`
-are the study's; `busy` the partitions that hold a job of this user already;
-`chain` the number of jobs submitted at once. Refuses a job the site cannot
-hold.
+the runs with these labels, for a site that cannot hold them all; a scan's
+own label keeps all its runs. `variants` are the study's; `busy` the
+partitions that hold a job of this user already; `chain` the number of jobs
+submitted at once. Refuses a job the site cannot hold, except for a scan's
+thread counts that do not fit the node: those are left out, and the job's
+`left_out` says why.
 """
 function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing, only_runs = String[],
                  file = "the spec", variants = ["default"], busy = Set{String}(), chain = 1, note = "")
@@ -308,6 +311,8 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     nruns = sum(r -> get(r, "threads", nothing) isa AbstractVector ? length(r["threads"]) : 1, run_tables)
     runs = Run[]
     labels = String[]                                  # of every run, also those `only_runs` leaves out
+    scans = String[]                                   # the labels of the scans, each of which names all its runs
+    left_out = String[]                                # a scan's runs that do not fit, and why
     for (k, r) in enumerate(run_tables)
         where = "$file, run $k"
         check_keys(r, RUN_KEYS, where)
@@ -318,7 +323,9 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
         counts = get(r, "threads", get(table, "threads", get(spec, "threads", nothing)))
         names = counts isa AbstractVector ? ["$label-t$t" for t in counts] : [label]
         append!(labels, names)
-        isempty(only_runs) || any(in(only_runs), names) || continue
+        counts isa AbstractVector && push!(scans, label)
+        whole = isempty(only_runs) || label in only_runs          # the run, or all the runs of a scan
+        whole || any(in(only_runs), names) || continue
         cmd = get(r, "cmd", nothing)
         cmd isa AbstractString && !isempty(strip(cmd)) || fail("$where has no `cmd`")
         words = Base.shell_split(cmd)
@@ -430,24 +437,32 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
                               ranks > 0 || placement == "numa" ? share : mode === :parallel ? max(1, cores ÷ nruns) : cores))
         threads = get(r, "threads", default_threads)
         scan = threads isa AbstractVector
+        fitting = 0
         for t in (scan ? threads : [threads])
             t isa Integer && t >= 1 || fail("$where: `threads` must be a positive integer or a list of them")
-            rpn * t <= cores ||
-                fail("$file: run $label asks for $(rpn == 1 ? "" : "$rpn ranks of ")$t threads, but $what $cores cores")
-            domains > 0 && t > share &&
-                fail("$file: run $label asks for $t threads, but the $domains NUMA domain$(domains == 1 ? "" : "s") ",
-                     "it is bound to $(domains == 1 ? "has" : "have") $share cores")
-            push!(runs, Run(scan ? "$label-t$t" : label, words, t, args, vars, variant, env,
+            run_label = scan ? "$label-t$t" : label
+            whole || run_label in only_runs || continue
+            too_many = rpn * t > cores ? "$(rpn == 1 ? "" : "$rpn ranks of ")$t threads, but $what $cores cores" :
+                       domains > 0 && t > share ? "$t threads, but the $domains NUMA domain$(domains == 1 ? "" : "s") " *
+                                                  "it is bound to $(domains == 1 ? "has" : "have") $share cores" : ""
+            # A scan written for several sites goes up to the largest node: on a smaller one, its counts that
+            # do not fit are left out, and said so. A run named by itself, or one that is not a scan, must fit.
+            if !isempty(too_many) && scan && whole
+                push!(left_out, "$run_label asks for $too_many")
+                continue
+            end
+            isempty(too_many) || fail("$file: run $run_label asks for $too_many")
+            fitting += 1
+            push!(runs, Run(run_label, words, t, args, vars, variant, env,
                             env_dir(project, env, own; variant, recipe, julia), ranks, run_nodes, placement, domains, recipe,
                             prefix, launcher_args, julia))
         end
+        scan && whole && fitting == 0 && fail("$file: none of the runs of scan $label fit here: ",
+                                                  join(filter(startswith("$label-t"), left_out), "; "))
     end
     allunique(labels) || fail("$file: two runs have the same label")
-    if !isempty(only_runs)
-        for label in only_runs
-            label in labels || fail("$file has no run $(repr(label)); its runs: ", join(labels, ", "))
-        end
-        filter!(r -> r.label in only_runs, runs)
+    for label in only_runs
+        label in labels || label in scans || fail("$file has no run $(repr(label)); its runs: ", join(labels, ", "))
     end
 
     # does the allocation hold the runs side by side?
@@ -460,7 +475,7 @@ function resolve(spec::AbstractDict, site::Site; study, project, queue = nothing
     tasks = maximum(r -> max(r.ranks, 1) ÷ r.nodes, runs)
 
     return Job(name, study, site, project, seconds, nodes, gpus, type, cores, tasks, mode, blas_threads, pin, chosen,
-               node, sbatch_args, checkpoints, mutable, restart, after, combine, String(description), runs)
+               node, sbatch_args, checkpoints, mutable, restart, after, combine, String(description), left_out, runs)
 end
 
 """

@@ -299,6 +299,21 @@ end
             # only some of the runs
             @test [r.label for r in job(spec_text(RUNS), loc; only_runs = ["n5"]).runs] == ["n5"]
             @test_throws "no run" job(spec_text(RUNS), loc; only_runs = ["n7"])
+            # a scan's label names all its runs; on a node too small for some of its counts, those are left out
+            scans = "[[run]]\nlabel = \"s\"\ncmd = \"examples/hello.jl n=1\"\nthreads = [1, 96, 500]\n\n" *
+                    "[[run]]\nlabel = \"one\"\ncmd = \"examples/hello.jl n=1\"\nthreads = 1\n"
+            j = job(spec_text(scans), trillium)
+            @test [r.label for r in j.runs] == ["s-t1", "s-t96", "one"]
+            @test startswith(only(j.left_out), "s-t500 asks for 500 threads, but ") && endswith(only(j.left_out), " 192 cores")
+            out = IOBuffer()
+            SimLaunch.describe(out, j)
+            @test occursin("left out on trillium, spec hello: run s-t500 asks for 500 threads", String(take!(out)))
+            @test [r.label for r in job(spec_text(scans), trillium; only_runs = ["s"]).runs] == ["s-t1", "s-t96"]
+            j = job(spec_text(scans), trillium; only_runs = ["s-t96", "one"])
+            @test [r.label for r in j.runs] == ["s-t96", "one"] && isempty(j.left_out)
+            @test_throws "run s-t500 asks for 500 threads" job(spec_text(scans), trillium; only_runs = ["s-t500"])
+            @test_throws "none of the runs of scan s fit" job(spec_text(replace(scans, "[1, 96, 500]" => "[400, 500]")), trillium)
+            @test_throws "run one asks for 500 threads" job(spec_text(replace(scans, "threads = 1\n" => "threads = 500\n")), trillium)
             # a run's Julia version: juliaup's channel, or the binary the profile names for it
             versions = """
                        [[run]]
@@ -639,6 +654,29 @@ end
             while !(length(dirs_of(jobid3)) == 1 && ended(jobid3)) && time() - t0 < 120; sleep(0.3); end
             @test length(dirs_of(jobid2)) == length(dirs_of(jobid3)) == 1 && isdir(dir)
             @test length(filter(n -> startswith(n, "hello-") && endswith(n, ".sh"), readdir(joinpath(study_code(load_site("local"), "toy"), "jobs")))) == 3
+
+            # a copy on the site that is not the snapshot: changed there, incomplete, or another snapshot of the name
+            hello = joinpath(study_code(load_site("local"), "toy"), "src", "Toy", "examples", "hello.jl")
+            original = read(hello, String)
+            chmod(hello, 0o644)
+            write(hello, original * "# changed on the site\n")
+            @test_throws "differs from its snapshot in src/Toy/examples/hello.jl" submit("toy", f; site = "local", io = devnull)
+            @test_throws "it was changed there" prepare("toy"; site = "local", specs = [f], io = devnull)
+            write(hello, original)
+            mv(hello, hello * ".moved")
+            @test_throws "lacks src/Toy/examples/hello.jl" submit("toy", f; site = "local", io = devnull)
+            mv(hello * ".moved", hello)
+            cached = joinpath(ENV["SIMLAUNCH_CACHE"], "toy")
+            mv(cached, cached * ".kept")
+            try
+                sleep(1)                                  # a snapshot's time has seconds
+                snapshot(toy; study = "toy")
+                @test_throws "holds another snapshot named toy" prepare("toy"; site = "local", specs = [f], io = devnull)
+                @test_throws "holds another snapshot named toy" submit("toy", f; site = "local", io = devnull)
+            finally
+                rm(cached; recursive = true, force = true)
+                mv(cached * ".kept", cached)
+            end
         end
 
         @testset "a run's Julia version" begin
@@ -1312,6 +1350,14 @@ end
             @test isdir(joinpath(root, "bylabel", "cluster", "chain-c")) && !ispath(joinpath(root, "bylabel", "cluster", "dev-n4"))
             @test_throws "has no run" fetch("toy"; site = "cluster", runs = ["c", "nosuch"], to = joinpath(root, "x"), io = devnull)
             @test !ispath(joinpath(root, "x", "cluster", "chain-c"))
+            # a scan's label names all its runs, and a label of its own comes first
+            cl = load_site("cluster")
+            fake = joinpath(study_scratch(cl, "toy"), "scan-sc-t2")
+            mkpath(fake)
+            write(joinpath(fake, "simwatch.toml"), "name = \"toy scan/sc-t2\"\n")
+            @test SimLaunch.chosen_runs(cl, "toy", ["sc", "c"]) == (["scan-sc-t2", "chain-c"], String[])
+            @test SimLaunch.chosen_runs(cl, "toy", ["s"]) == (String[], ["s"])
+            rm(fake; recursive = true)
             # old checkpoints are deleted only after a yes
             del(level; kw...) = SimLaunch.delete(["toy"]; sites = ["cluster"], level, kw...)
             out = IOBuffer()
