@@ -409,7 +409,7 @@ function check_site_copy(site::Site, study; copying::Bool = false)
         fail("study $study has not been copied to $(site.name); run `simlaunch prepare $study --site $(site.name)`")
     end
     here = joinpath(cache_root(), study)
-    d = tree_differences(site, here, code; exclude = ["/tools/"])
+    d = tree_differences(site, here, code; exclude = ["tools"])
     some(paths) = join(first(paths, 5), ", ") * (length(paths) > 5 ? " and $(length(paths) - 5) more" : "")
     if "snapshot.toml" in d.differ
         taken(text) = (m = match(r"^created = \"([^\"]*)\""m, text); m === nothing ? "at another time" : "on " * m[1])

@@ -519,22 +519,20 @@ end
 
 """
 The files of the local directory `src` whose contents differ from those under `dst` on the site, and
-those missing there: `(; differ, missing)`, as paths relative to both. Files only on the site are not
-looked at. `dst` must exist.
+those missing there: `(; differ, missing)`, as paths relative to both. Only the entries of `src`
+other than `exclude` are looked at, and on the site only what they hold: files there alone are left
+aside.
 """
 function tree_differences(site::Site, src, dst; exclude = String[])
-    out = IOBuffer()
-    excludes = ["--exclude=$e" for e in exclude]
-    # a dry run that compares the files' contents (-c), not their times, and lists what it would copy
-    success(pipeline(`rsync -rlcn --out-format="%i %n" $excludes $(src * "/") $(rsync_target(site, dst * "/"))`;
-                     stdout = out, stderr)) ||
-        fail("comparing $src with $(site.name):$dst failed (rsync's message is above); try again")
-    differ, missing = String[], String[]
-    for line in split(String(take!(out)), '\n'; keepempty = false)
-        m = match(r"^[<>ch.*][fLDS](\S*) (.*)$", line)       # a file's line; directories are left aside
-        m === nothing && continue
-        push!(occursin("+++", m[1]) ? missing : differ, m[2])
-    end
+    tops = filter(∉(exclude), readdir(src))
+    isempty(tops) && return (; differ = String[], missing = String[])
+    # POSIX cksum gives the same sums on macOS and Linux; an rsync dry run with -c did not on every macOS
+    sums(dir) = "cd $(q(dir)) 2>/dev/null && find $(join(q.(tops), " ")) -type f -exec cksum {} + 2>/dev/null; true"
+    table(text) = Dict(m[2] => m[1] for m in (match(r"^(\d+ \d+) (.*)$", l) for l in split(text, '\n'))
+                       if m !== nothing)
+    here, there = table(read(`bash -c $(sums(src))`, String)), table(readsite(site, sums(dst)))
+    differ = sort!([p for (p, s) in here if haskey(there, p) && there[p] != s])
+    missing = sort!([p for p in keys(here) if !haskey(there, p)])
     return (; differ, missing)
 end
 

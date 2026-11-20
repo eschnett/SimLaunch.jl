@@ -359,7 +359,7 @@ a new study, so a running job never sees its package image rewritten;
 `simlaunch snapshot` refuses a study name that already exists.
 
 The site's copy is checked against the snapshot, by its files' contents
-(`rsync -c -n`, `check_site_copy` in `src/actions.jl`), by `prepare` and
+(`cksum`, `check_site_copy` in `src/actions.jl`), by `prepare` and
 before each `submit`. Two cases are refused. A file changed on the site by
 hand would run code the study's record does not describe, so a script
 cannot be refreshed in place: the fix is a new study. And a snapshot taken
